@@ -122,7 +122,7 @@ NOMINATIM_USER_AGENT = (
 SUCCESS_TTL_SECONDS = 180 * 24 * 60 * 60
 NOT_FOUND_TTL_SECONDS = 24 * 60 * 60
 NOMINATIM_MIN_INTERVAL = 1.05
-ADDRESS_NORMALIZER_VERSION = "v3"
+ADDRESS_NORMALIZER_VERSION = "v4"
 
 GEOCODE_LOCK = threading.Lock()
 LAST_NOMINATIM_REQUEST = 0.0
@@ -360,15 +360,15 @@ def remove_duplicate_fragment(value):
     if not value:
         return ""
 
-    # Exakte doppelte Hälfte: 'ABC 2ABC 2'.
+    # Exakte doppelte Hälfte: 'PROVINZIALSTRASSE 2PROVINZIALSTRASSE 2'.
     compact = value.strip()
     n = len(compact)
-    for split in range(max(1, n // 2 - 3), min(n, n // 2 + 4)):
+    for split in range(max(1, n // 2 - 6), min(n, n // 2 + 7)):
         a, b = compact[:split].strip(), compact[split:].strip()
         if a and comparison_text(a) == comparison_text(b):
             return a
 
-    # Doppelte Wortfolge: 'HEINRICH... HEINRICH...'.
+    # Doppelte Wortfolge: 'HEINRICH-KÖRNER-STR HEINRICH-KÖRNER-STR'.
     words = compact.split()
     for size in range(len(words) // 2, 0, -1):
         if len(words) >= size * 2:
@@ -378,85 +378,188 @@ def remove_duplicate_fragment(value):
                 rest = " ".join(words[size * 2:]).strip()
                 return (a + (" " + rest if rest else "")).strip()
 
-    # Wiederholung eines längeren Präfixes irgendwo in der zweiten Hälfte.
-    normalized = comparison_text(compact)
-    if len(normalized) >= 10:
-        for i in range(5, len(compact)):
-            left = compact[:i].strip()
-            right = compact[i:].strip()
-            if len(comparison_text(left)) >= 6 and comparison_text(right).startswith(comparison_text(left)):
-                return left
+    # Verklebte Wiederholung eines ausreichend langen Präfixes.
+    for i in range(6, len(compact)):
+        left = compact[:i].strip()
+        right = compact[i:].strip()
+        left_cmp = comparison_text(left)
+        if len(left_cmp) >= 7 and comparison_text(right).startswith(left_cmp):
+            return left
+
     return compact
 
 
-def clean_onstreet_address(raw):
-    """Macht aus OnStreet-Müll eine geocodierbare deutsche Adresse."""
-    original = safe_text(raw)
-    if not original:
-        return {
-            "raw": "", "address": "", "street": "", "house_number": "",
-            "postal_code": "", "city": "", "has_street": False,
-            "has_house_number": False, "is_precise_input": False,
-            "warning": "Keine Adresse vorhanden",
-        }
+# Straßenmarker helfen nur beim Aufteilen von "PLZ Ort Straße Hausnummer".
+# Die eigentliche Geocodierung bleibt unstrukturiert genug, damit Nominatim
+# auch ungewöhnliche deutsche Straßennamen selbst interpretieren kann.
+STREET_MARKER_RE = re.compile(
+    r"(?i)(?:"
+    r"stra(?:ß|ss)e|str\.?\b|weg\b|allee\b|platz\b|gasse\b|ring\b|ufer\b|"
+    r"chaussee\b|\bch\b|damm\b|markt\b|pfad\b|steig(?:e)?\b|wall\b|"
+    r"graben\b|promenade\b|br(?:ü|ue)cke\b|steg\b|siedlung\b|"
+    r"(?:^|[-\wÄÖÜäöüß])str\b"
+    r")"
+)
 
+
+def _looks_like_street(value):
+    value = safe_text(value)
+    if not value:
+        return False
+    if re.search(r"unbekannt(?:er|e|es)?\s+stra(?:ss|ß)enname", value, re.I):
+        return True
+    return bool(STREET_MARKER_RE.search(value))
+
+
+def _street_start_index(value):
+    """Findet ungefähr, wo in 'Sankt Augustin Hauptstraße 18' die Straße beginnt."""
+    value = safe_text(value)
+    if not value:
+        return None
+    tokens = value.split()
+    for i, token in enumerate(tokens):
+        if STREET_MARKER_RE.search(token):
+            # Straßennamen können aus mehreren Wörtern bestehen. Normalerweise ist
+            # der Marker im letzten Namenswort, deshalb ein Wort davor mitnehmen,
+            # wenn davor noch mindestens ein Ortswort übrig bleibt.
+            return i
+    return None
+
+
+def _strip_location_prefix(value, postal_code="", city=""):
+    result = safe_text(value)
+    if postal_code:
+        result = re.sub(rf"^\s*{re.escape(postal_code)}\s+", "", result, flags=re.I)
+    if city:
+        result = re.sub(rf"^\s*{re.escape(city)}\s+", "", result, flags=re.I)
+    return result.strip(" ,")
+
+
+def _split_city_and_street_after_postcode(remainder):
+    """Teilt z.B. 'Sankt Augustin Hauptstraße 18' in Ort und Straße."""
+    remainder = re.sub(r"\s+", " ", safe_text(remainder)).strip(" ,")
+    if not remainder:
+        return "", ""
+    idx = _street_start_index(remainder)
+    if idx is None:
+        return smart_city_name(remainder), ""
+    tokens = remainder.split()
+    city = " ".join(tokens[:idx]).strip()
+    street = " ".join(tokens[idx:]).strip()
+    return smart_city_name(city), smart_street_name(street)
+
+
+def _remove_house_number(street, house_number):
+    street = safe_text(street)
+    if not street or not house_number:
+        return street
+    return re.sub(
+        rf"\s*\b{re.escape(house_number)}\b\s*$",
+        "",
+        street,
+        flags=re.I,
+    ).strip(" ,")
+
+
+def clean_onstreet_address(raw):
+    """Bereinigt typische OnStreet-Adressen, ohne Informationen wegzuwerfen."""
+    original = safe_text(raw)
+    empty = {
+        "raw": "", "address": "", "search_text": "", "street": "",
+        "street_without_number": "", "house_number": "", "postal_code": "",
+        "city": "", "has_street": False, "has_house_number": False,
+        "is_precise_input": False, "unknown_street": False,
+        "warning": "Keine Adresse vorhanden",
+    }
+    if not original:
+        return empty
+
+    # Kreis-/Kennzeichenzusätze wie (BN), (SU), (K) entfernen.
     text = original.replace("\n", " ").replace("\r", " ")
-    text = re.sub(r"\([^)]{1,8}\)", "", text)  # (BN), (SU) usw.
+    text = re.sub(r"\(\s*[A-ZÄÖÜ]{1,5}\s*\)", "", text)
     text = re.sub(r"\s+", " ", text).strip(" ,")
     parts = [re.sub(r"\s+", " ", p).strip(" ,") for p in text.split(",") if p.strip(" ,")]
 
     postal_code = ""
     city = ""
-    # Der letzte PLZ/Ort-Block ist bei OnStreet meist der sauberste.
+    street = ""
+
+    # 1) Einen sauberen PLZ-Ort-Block bevorzugen, meist der letzte OnStreet-Teil.
     for part in reversed(parts):
-        m = re.search(r"\b(\d{5})\b\s*(.*)$", part)
-        if m:
+        m = re.match(r"^\s*(\d{5})\s+(.+?)\s*$", part)
+        if not m:
+            continue
+        rest = m.group(2).strip()
+        # Ein Block ohne erkennbaren Straßenmarker ist sehr wahrscheinlich PLZ + Ort.
+        if not _looks_like_street(rest) and not re.search(r"\b\d+[a-zA-Z]?\s*$", rest):
             postal_code = m.group(1)
-            city_candidate = smart_city_name(m.group(2))
-            if city_candidate:
-                city = city_candidate
+            city = smart_city_name(rest)
+            break
+
+    # 2) Wenn kein reiner Ortsblock existiert, einen kombinierten Block zerlegen.
+    if not postal_code:
+        for part in parts:
+            m = re.match(r"^\s*(\d{5})\s+(.+?)\s*$", part)
+            if not m:
+                continue
+            postal_code = m.group(1)
+            city_guess, street_guess = _split_city_and_street_after_postcode(m.group(2))
+            city = city_guess
+            if street_guess:
+                street = street_guess
+            break
+
+    # 3) Ohne PLZ ist der letzte kommagetrennte Text oft der Ort: 'Bonn ..., Bonn'.
+    if not city and len(parts) >= 2:
+        tail = parts[-1]
+        if not re.search(r"\d", tail) and not _looks_like_street(tail):
+            city = smart_city_name(tail)
+
+    # 4) Besten Straßenblock suchen. Erst Block mit Marker, dann erster Nicht-Ortsblock.
+    candidates = []
+    for part in parts:
+        candidate = part
+        if postal_code:
+            candidate = re.sub(rf"^\s*{re.escape(postal_code)}\s+", "", candidate, flags=re.I)
+        if city:
+            candidate = re.sub(rf"^\s*{re.escape(city)}\s+", "", candidate, flags=re.I)
+        candidate = candidate.strip(" ,")
+        if not candidate:
+            continue
+        # Reiner Ortsblock nicht als Straße missverstehen.
+        if city and comparison_text(candidate) == comparison_text(city):
+            continue
+        candidate = remove_duplicate_fragment(candidate)
+        candidates.append(candidate)
+
+    if not street:
+        for candidate in candidates:
+            if _looks_like_street(candidate):
+                street = candidate
                 break
 
-    # Auch ohne PLZ den Ort aus dem letzten Komma-Block übernehmen.
-    if not city and len(parts) >= 2:
-        tail = smart_city_name(parts[-1])
-        if tail and not re.search(r"\d", tail):
-            city = tail
+    if not street and candidates:
+        # Bei 'Bonn Austr 3-50, Bonn' erkennt der Marker ggf. nichts.
+        # Ein Kandidat mit Hausnummer ist dann immer noch besser als nur der Ort.
+        for candidate in candidates:
+            if re.search(r"\b\d+[a-zA-Z]?(?:\s*[-/]\s*\d+[a-zA-Z]?)?\b", candidate):
+                street = candidate
+                break
 
-    first = parts[0] if parts else text
-    first = re.sub(r"^\s*\d{5}\s+", "", first)
-
-    # Führenden Ort aus dem ersten Block entfernen.
-    if city:
-        city_pat = re.escape(city)
-        first = re.sub(rf"^\s*{city_pat}\s+", "", first, flags=re.I)
-    else:
-        # Häufig: 'Bonn Austr 3...' ohne PLZ. Ersten Ort über den letzten Block erkennen.
-        if len(parts) >= 2:
-            tail_city = smart_city_name(parts[-1])
-            if tail_city:
-                city = tail_city
-                first = re.sub(rf"^\s*{re.escape(city)}\s+", "", first, flags=re.I)
-
-    first = remove_duplicate_fragment(first)
-    unknown_street = bool(re.search(r"unbekannt(?:er|e|es)?\s+stra(?:ss|ß)enname", first, re.I))
+    street = smart_street_name(remove_duplicate_fragment(street))
+    unknown_street = bool(re.search(r"unbekannt(?:er|e|es)?\s+stra(?:ss|ß)enname", street, re.I))
     if unknown_street:
         street = ""
-    else:
-        street = smart_street_name(first)
 
-    # Falls der Ort noch vorne an der Straße hängt, ein zweites Mal entfernen.
-    if city and street:
-        street = re.sub(rf"^\s*{re.escape(city)}\s+", "", street, flags=re.I).strip()
+    # Hausnummer am Straßenende. PLZ kann dadurch nicht versehentlich zur Hausnummer werden.
+    hn_match = re.search(r"\b(\d+[a-zA-Z]?(?:\s*[-/]\s*\d+[a-zA-Z]?)?)\s*$", street)
+    house_number = re.sub(r"\s+", "", hn_match.group(1)) if hn_match else ""
+    street_without_number = _remove_house_number(street, house_number)
 
-    hn_match = re.search(r"\b(\d+[a-zA-Z]?(?:\s*[-/]\s*\d+[a-zA-Z]?)?)\b", street)
-    house_number = hn_match.group(1).replace(" ", "") if hn_match else ""
-
-    # Nur ein echter Straßenanteil zählt als Straße.
-    street_words = comparison_text(street)
-    has_street = bool(street and len(street_words) >= 4 and not unknown_street)
+    has_street = bool(street_without_number and len(comparison_text(street_without_number)) >= 3 and not unknown_street)
     has_house_number = bool(house_number)
 
+    # Der wichtigste Suchstring: so konkret wie möglich, aber ohne OnStreet-Dopplungen.
     address_parts = []
     if has_street:
         address_parts.append(street)
@@ -466,29 +569,116 @@ def clean_onstreet_address(raw):
     address_parts.append("Deutschland")
     address = ", ".join(address_parts)
 
+    # Unstrukturierter Zusatz-String als zweite Chance für Nominatim.
+    # Hier darf die Stadt vor der Straße stehen, Nominatim kann das meist gut zerlegen.
+    search_bits = []
+    if postal_code:
+        search_bits.append(postal_code)
+    if city:
+        search_bits.append(city)
+    if has_street:
+        search_bits.append(street)
+    search_text = " ".join(search_bits).strip()
+    if search_text:
+        search_text += ", Deutschland"
+    else:
+        search_text = address
+
     warning = ""
     if unknown_street:
         warning = "Straßenname in OnStreet unbekannt; nur Ort/PLZ verwendbar"
-    elif not city:
-        warning = "Kein Ort erkannt"
+    elif not city and not postal_code:
+        warning = "Kein Ort und keine PLZ erkannt"
     elif not has_street:
-        warning = "Keine brauchbare Straße erkannt"
+        warning = "Keine brauchbare Straße erkannt; Ort/PLZ nur näherungsweise"
     elif not has_house_number:
         warning = "Keine Hausnummer; Straßenposition ist nur näherungsweise"
 
     return {
         "raw": original,
         "address": address,
+        "search_text": search_text,
         "street": street if has_street else "",
+        "street_without_number": street_without_number if has_street else "",
         "house_number": house_number,
         "postal_code": postal_code,
         "city": city,
         "has_street": has_street,
         "has_house_number": has_house_number,
-        "is_precise_input": bool(has_street and has_house_number and city),
+        "is_precise_input": bool(has_street and has_house_number and (city or postal_code)),
+        "unknown_street": unknown_street,
         "warning": warning,
     }
 
+
+def street_name_variants(street):
+    """Liefert wenige sinnvolle Schreibweisen für Str./Straße/Strasse und Ch."""
+    street = safe_text(street)
+    if not street:
+        return []
+
+    variants = [street]
+
+    # Suffixe nur am Wortende ändern, damit z.B. 'Straßburger' nicht zerlegt wird.
+    replacements = []
+    replacements.append(re.sub(r"(?i)(?:-|\s)str\.?\b", " Straße", street))
+    replacements.append(re.sub(r"(?i)(?:-|\s)str\.?\b", " Strasse", street))
+    replacements.append(re.sub(r"(?i)straße\b", "Strasse", street))
+    replacements.append(re.sub(r"(?i)strasse\b", "Straße", street))
+    replacements.append(re.sub(r"(?i)straße\b", "Str", street))
+    replacements.append(re.sub(r"(?i)strasse\b", "Str", street))
+    replacements.append(re.sub(r"(?i)\bCh\b", "Chaussee", street))
+
+    for item in replacements:
+        item = re.sub(r"\s+", " ", item).strip(" ,")
+        if item and comparison_text(item) not in {comparison_text(v) for v in variants}:
+            variants.append(item)
+
+    return variants[:5]
+
+
+def build_geocode_queries(cleaned):
+    """Baut wenige, gestaffelte Nominatim-Suchvarianten statt einer fragilen Einzelabfrage."""
+    queries = []
+
+    def add(query, level):
+        query = re.sub(r"\s+", " ", safe_text(query)).strip(" ,")
+        if not query:
+            return
+        if not query.lower().endswith("deutschland"):
+            query = f"{query}, Deutschland"
+        key = normalize_address(query)
+        if key and all(normalize_address(q["query"]) != key for q in queries):
+            queries.append({"query": query, "level": level})
+
+    street = cleaned.get("street", "")
+    street_base = cleaned.get("street_without_number", "")
+    hn = cleaned.get("house_number", "")
+    postal = cleaned.get("postal_code", "")
+    city = cleaned.get("city", "")
+    locality = " ".join(x for x in [postal, city] if x).strip()
+
+    # 1) Möglichst konkrete, bereinigte Adresse.
+    for variant in street_name_variants(street):
+        add(", ".join(x for x in [variant, locality] if x), "house" if hn else "street")
+
+    # 2) Der zusammenhängende OnStreet-Inhalt hilft bei ungewöhnlicher Orts-/Straßentrennung.
+    add(cleaned.get("search_text", ""), "raw_cleaned")
+
+    # 3) Wenn Hausnummer problematisch ist, Straße ohne Hausnummer als Näherung.
+    if street_base:
+        for variant in street_name_variants(street_base):
+            add(", ".join(x for x in [variant, locality] if x), "street")
+            if city and postal:
+                add(f"{variant}, {city}", "street")
+
+    # 4) Nur als letzte Näherung Ort/PLZ. Kein 'exakt'-Status möglich.
+    if locality:
+        add(locality, "locality")
+
+    # Maximal vier echte HTTP-Abfragen pro bislang unbekannter Adresse.
+    # In der Praxis trifft meist die erste oder zweite Variante.
+    return queries[:4]
 
 def address_cache_key(address):
     normalized = normalize_address(address)
@@ -642,99 +832,197 @@ def _street_similarity(input_street, details):
 
 
 def _city_similarity(input_city, details):
-    result_city = safe_text(
-        details.get("city") or details.get("town") or details.get("village")
-        or details.get("municipality") or details.get("suburb")
-    )
-    a, b = comparison_text(input_city), comparison_text(result_city)
-    if not a or not b:
+    candidates = [
+        details.get("city"), details.get("town"), details.get("village"),
+        details.get("municipality"), details.get("suburb"), details.get("city_district"),
+    ]
+    a = comparison_text(input_city)
+    if not a:
         return False
-    return a == b or a in b or b in a
+    for candidate in candidates:
+        b = comparison_text(candidate)
+        if b and (a == b or a in b or b in a):
+            return True
+    return False
 
 
-def assess_geocode_quality(cleaned, result):
+def _postal_similarity(input_postal, details):
+    a = safe_text(input_postal)
+    b = safe_text(details.get("postcode"))
+    return bool(a and b and a == b)
+
+
+def assess_geocode_result(cleaned, result, query_level=""):
+    """Bewertet einen Nominatim-Treffer und verhindert selbstbewusste Stadtmittelpunkte."""
     details = result.get("address") or {}
-    if not cleaned.get("has_street"):
-        return "estimated"
-    if not _street_similarity(cleaned.get("street", ""), details):
-        return "estimated"
-    if cleaned.get("city") and not _city_similarity(cleaned.get("city", ""), details):
-        return "estimated"
+    input_street = cleaned.get("street_without_number") or cleaned.get("street", "")
+    street_ok = _street_similarity(input_street, details) if cleaned.get("has_street") else False
+    city_ok = _city_similarity(cleaned.get("city", ""), details) if cleaned.get("city") else False
+    postal_ok = _postal_similarity(cleaned.get("postal_code", ""), details) if cleaned.get("postal_code") else False
+
     requested_hn = comparison_text(cleaned.get("house_number", ""))
     returned_hn = comparison_text(details.get("house_number", ""))
-    if requested_hn:
-        if not returned_hn or requested_hn != returned_hn:
-            return "estimated"
-        return "exact"
-    return "estimated"
+    house_ok = bool(requested_hn and returned_hn and requested_hn == returned_hn)
+
+    locality_ok = postal_ok or city_ok or (not cleaned.get("city") and not cleaned.get("postal_code"))
+
+    # Treffer in einem völlig anderen Ort nicht verwenden.
+    if (cleaned.get("city") or cleaned.get("postal_code")) and not locality_ok:
+        return {"accepted": False, "score": 0, "quality": "unknown"}
+
+    score = 0
+    if postal_ok:
+        score += 4
+    if city_ok:
+        score += 3
+    if street_ok:
+        score += 6
+    if house_ok:
+        score += 8
+    if query_level == "house":
+        score += 1
+
+    if street_ok and house_ok:
+        quality = "exact"
+    elif street_ok:
+        quality = "estimated"
+    elif locality_ok and query_level == "locality":
+        quality = "estimated"
+    elif locality_ok and not cleaned.get("has_street"):
+        quality = "estimated"
+    else:
+        return {"accepted": False, "score": score, "quality": "unknown"}
+
+    return {
+        "accepted": True,
+        "score": score,
+        "quality": quality,
+        "street_ok": street_ok,
+        "city_ok": city_ok,
+        "postal_ok": postal_ok,
+        "house_ok": house_ok,
+    }
+
+
+def _nominatim_request(query):
+    global LAST_NOMINATIM_REQUEST
+    params = {
+        "q": query,
+        "format": "jsonv2",
+        "limit": 5,
+        "countrycodes": "de",
+        "addressdetails": 1,
+    }
+    url = f"{NOMINATIM_URL}?{urlencode(params)}"
+    with GEOCODE_LOCK:
+        elapsed = time.monotonic() - LAST_NOMINATIM_REQUEST
+        if elapsed < NOMINATIM_MIN_INTERVAL:
+            time.sleep(NOMINATIM_MIN_INTERVAL - elapsed)
+        request = Request(
+            url,
+            headers={
+                "User-Agent": NOMINATIM_USER_AGENT,
+                "Accept": "application/json",
+            },
+        )
+        LAST_NOMINATIM_REQUEST = time.monotonic()
+        with urlopen(request, timeout=12) as response:
+            return json.loads(response.read().decode("utf-8"))
 
 
 def geocode_cleaned_address(cleaned):
-    """Sucht eine bereinigte Adresse. Cache zuerst, Nominatim nur wenn nötig."""
-    global LAST_NOMINATIM_REQUEST
-    address = safe_text(cleaned.get("address"))
-    if not address or address == "Deutschland":
-        return {"status": "EMPTY", "lat": None, "lon": None, "display_name": "", "cached": False,
-                "quality": "unknown", "error": "Keine geocodierbare Adresse"}
+    """Cache zuerst; sonst gestaffelte Nominatim-Suche mit wenigen Varianten."""
+    canonical = safe_text(cleaned.get("address")) or safe_text(cleaned.get("search_text"))
+    if not canonical or canonical == "Deutschland":
+        return {
+            "status": "EMPTY", "lat": None, "lon": None, "display_name": "",
+            "cached": False, "quality": "unknown", "error": "Keine geocodierbare Adresse",
+            "query_used": "",
+        }
 
-    cached = read_geocode_cache(address)
+    cached = read_geocode_cache(canonical)
     if cached:
+        meta = cached.get("details") or {}
+        cached["query_used"] = safe_text(meta.get("_query_used"))
+        cached["query_level"] = safe_text(meta.get("_query_level"))
         return cached
-    stale = read_geocode_cache(address, allow_expired=True)
 
-    params = {"format": "jsonv2", "limit": 3, "countrycodes": "de", "addressdetails": 1}
-    # Strukturierte Suche ist für OnStreet-Adressen stabiler als ein einziger q-String.
-    if cleaned.get("has_street") and cleaned.get("city"):
-        params["street"] = cleaned["street"]
-        params["city"] = cleaned["city"]
-        if cleaned.get("postal_code"):
-            params["postalcode"] = cleaned["postal_code"]
-        params["country"] = "Germany"
-    else:
-        params["q"] = address
+    stale = read_geocode_cache(canonical, allow_expired=True)
+    queries = build_geocode_queries(cleaned)
+    best = None
+    got_any_http_response = False
 
-    url = f"{NOMINATIM_URL}?{urlencode(params)}"
     try:
-        with GEOCODE_LOCK:
-            elapsed = time.monotonic() - LAST_NOMINATIM_REQUEST
-            if elapsed < NOMINATIM_MIN_INTERVAL:
-                time.sleep(NOMINATIM_MIN_INTERVAL - elapsed)
-            request = Request(url, headers={"User-Agent": NOMINATIM_USER_AGENT, "Accept": "application/json"})
-            LAST_NOMINATIM_REQUEST = time.monotonic()
-            with urlopen(request, timeout=12) as response:
-                data = json.loads(response.read().decode("utf-8"))
+        for variant in queries:
+            query = variant["query"]
+            level = variant["level"]
+            data = _nominatim_request(query)
+            got_any_http_response = True
+            if not data:
+                continue
 
-        if not data:
-            write_geocode_cache(address, "NOT_FOUND", quality="unknown")
-            return {"status": "NOT_FOUND", "lat": None, "lon": None, "display_name": "", "cached": False,
-                    "quality": "unknown", "error": "Adresse nicht gefunden"}
+            for result in data:
+                assessment = assess_geocode_result(cleaned, result, level)
+                if not assessment.get("accepted"):
+                    continue
+                candidate = {
+                    "score": assessment["score"],
+                    "quality": assessment["quality"],
+                    "result": result,
+                    "query_used": query,
+                    "query_level": level,
+                }
+                if best is None or candidate["score"] > best["score"]:
+                    best = candidate
 
-        # Bevorzuge den Treffer, dessen Straße und Ort wirklich passen.
-        ranked = []
-        for result in data:
-            quality = assess_geocode_quality(cleaned, result)
-            score = 2 if quality == "exact" else 1
-            if _street_similarity(cleaned.get("street", ""), result.get("address") or {}):
-                score += 2
-            if _city_similarity(cleaned.get("city", ""), result.get("address") or {}):
-                score += 1
-            ranked.append((score, quality, result))
-        ranked.sort(key=lambda x: x[0], reverse=True)
-        _, quality, result = ranked[0]
-        lat, lon = float(result["lat"]), float(result["lon"])
-        display_name = safe_text(result.get("display_name"))
-        details = result.get("address") or {}
-        write_geocode_cache(address, "OK", lat, lon, display_name, quality, details)
-        return {"status": "OK", "lat": lat, "lon": lon, "display_name": display_name,
-                "cached": False, "expired": False, "quality": quality, "details": details}
+            # Hausnummer + Straße + Ort passen: keine weiteren Community-API-Abfragen nötig.
+            if best and best["quality"] == "exact":
+                break
+            # Ein sehr guter Straßentreffer genügt ebenfalls. Weitere Varianten würden nur Last erzeugen.
+            if best and best["score"] >= 10:
+                break
+
+        if best:
+            result = best["result"]
+            lat = float(result["lat"])
+            lon = float(result["lon"])
+            display_name = safe_text(result.get("display_name"))
+            details = dict(result.get("address") or {})
+            details["_query_used"] = best["query_used"]
+            details["_query_level"] = best["query_level"]
+            write_geocode_cache(
+                canonical, "OK", lat, lon, display_name,
+                best["quality"], details,
+            )
+            return {
+                "status": "OK", "lat": lat, "lon": lon,
+                "display_name": display_name, "cached": False, "expired": False,
+                "quality": best["quality"], "details": details,
+                "query_used": best["query_used"], "query_level": best["query_level"],
+            }
+
+        if got_any_http_response:
+            write_geocode_cache(canonical, "NOT_FOUND", quality="unknown", details={
+                "_query_used": " | ".join(q["query"] for q in queries),
+            })
+        return {
+            "status": "NOT_FOUND", "lat": None, "lon": None, "display_name": "",
+            "cached": False, "quality": "unknown", "error": "Adresse nicht gefunden",
+            "query_used": " | ".join(q["query"] for q in queries),
+        }
 
     except (HTTPError, URLError, TimeoutError, ValueError, OSError) as exc:
         if stale and stale.get("status") == "OK":
             stale["stale"] = True
+            stale["quality"] = "estimated"
             stale["error"] = "Geocoder nicht erreichbar; alter Cache-Treffer verwendet"
+            meta = stale.get("details") or {}
+            stale["query_used"] = safe_text(meta.get("_query_used"))
             return stale
-        return {"status": "ERROR", "lat": None, "lon": None, "display_name": "", "cached": False,
-                "quality": "unknown", "error": str(exc)}
+        return {
+            "status": "ERROR", "lat": None, "lon": None, "display_name": "",
+            "cached": False, "quality": "unknown", "error": str(exc), "query_used": "",
+        }
 
 
 def geocode_address(address):
@@ -972,8 +1260,11 @@ def resolve_address_zone(address):
     raw = safe_text(address)
     cleaned = clean_onstreet_address(raw)
     if not raw:
-        return {"zone": None, "source": "missing", "quality": "unknown", "lat": None, "lon": None,
-                "warning": True, "message": "Keine Adresse", "cleaned_address": "", "display_name": ""}
+        return {
+            "zone": None, "source": "missing", "quality": "unknown",
+            "lat": None, "lon": None, "warning": True, "message": "Keine Adresse",
+            "cleaned_address": "", "display_name": "", "query_used": "",
+        }
 
     geo = geocode_cleaned_address(cleaned)
     if geo.get("status") == "OK" and geo.get("lat") is not None and geo.get("lon") is not None:
@@ -981,32 +1272,51 @@ def resolve_address_zone(address):
         quality = geo.get("quality") or "estimated"
         if geo.get("stale"):
             quality = "estimated"
+
         if zone:
             exact = quality == "exact"
             return {
                 "zone": zone,
                 "source": "cache" if geo.get("cached") else "geocoding",
-                "quality": quality, "lat": geo["lat"], "lon": geo["lon"],
+                "quality": quality,
+                "lat": geo["lat"], "lon": geo["lon"],
                 "warning": not exact,
-                "message": "Geofence exakt erkannt" if exact else "Koordinate erkannt, Adresse aber nicht hausnummerngenau",
-                "cleaned_address": cleaned.get("address", ""), "display_name": geo.get("display_name", ""),
+                "message": (
+                    "Adresse hausnummerngenau geocodiert"
+                    if exact
+                    else "Straße/Ort geocodiert; Position ist näherungsweise"
+                ),
+                "cleaned_address": cleaned.get("address", ""),
+                "display_name": geo.get("display_name", ""),
+                "query_used": geo.get("query_used", ""),
             }
-        # Eine echte Koordinate außerhalb aller FP-Flächen darf nicht per PLZ zurück in eine Zone gezwungen werden.
+
         return {
-            "zone": None, "source": "geocoding", "quality": quality, "lat": geo["lat"], "lon": geo["lon"],
-            "warning": True, "message": "Koordinate liegt außerhalb der bekannten FP-Geofences",
-            "cleaned_address": cleaned.get("address", ""), "display_name": geo.get("display_name", ""),
+            "zone": None, "source": "geocoding", "quality": quality,
+            "lat": geo["lat"], "lon": geo["lon"], "warning": True,
+            "message": "Gefundene Koordinate liegt außerhalb der bekannten FP-Geofences",
+            "cleaned_address": cleaned.get("address", ""),
+            "display_name": geo.get("display_name", ""),
+            "query_used": geo.get("query_used", ""),
         }
 
+    # Nur bekannte PLZ-/Ortsregeln als Schätzung. Kein pauschales 'irgendwas = FP1'.
     fallback = detect_adac_zone_fallback(cleaned.get("address") or raw)
     return {
-        "zone": fallback, "source": "fallback" if fallback else "unknown",
-        "quality": "estimated" if fallback else "unknown", "lat": None, "lon": None,
+        "zone": fallback,
+        "source": "fallback" if fallback else "unknown",
+        "quality": "estimated" if fallback else "unknown",
+        "lat": None, "lon": None,
         "warning": True,
-        "message": "PLZ/Ort nur als Schätzung" if fallback else "Adresse konnte nicht zuverlässig bestimmt werden",
-        "cleaned_address": cleaned.get("address", ""), "display_name": "",
+        "message": (
+            "Online-Geocoding ohne Treffer; bekannte PLZ/Ort-Regel als Schätzung"
+            if fallback
+            else "Adresse konnte weder online noch per bekannter PLZ/Ort-Regel bestimmt werden"
+        ),
+        "cleaned_address": cleaned.get("address", ""),
+        "display_name": "",
+        "query_used": geo.get("query_used", "") if isinstance(geo, dict) else "",
     }
-
 
 def highest_route_zone(start_zone, target_zone):
     valid = [z for z in (start_zone, target_zone) if z in ZONE_RANK]
@@ -1113,6 +1423,10 @@ def calculate_adac_order(order, force=False):
     order["target_quality"] = target_result.get("quality", "unknown")
     order["start_message"] = start_result.get("message", "")
     order["target_message"] = target_result.get("message", "")
+    order["start_query_used"] = start_result.get("query_used", "")
+    order["target_query_used"] = target_result.get("query_used", "")
+    order["start_display_name"] = start_result.get("display_name", "")
+    order["target_display_name"] = target_result.get("display_name", "")
 
     order["zone_warning"] = bool(
         start_result.get("warning")
@@ -1937,6 +2251,7 @@ def import_csv_bytes(raw_bytes):
 # ============================================================
 
 st.title("🚜 Cuvenhaus Provisions-Manager")
+st.caption("Adresssuche: © OpenStreetMap contributors · Nominatim. Treffer werden lokal gecacht und nur bei Bedarf online gesucht.")
 
 uploaded_file = st.file_uploader(
     "📂 OnStreet-CSV auswählen",
@@ -2305,22 +2620,20 @@ for order in all_orders:
     ):
         calculate_adac_order(order)
 
-    if nr in st.session_state.storno_orders:
-        order["betrag"] = 0.0
-        order["tarif"] = "Storno (0 €)"
-        order["bemerkung"] = "Storno (0 €)"
-
     if nr in st.session_state.manual_tariffs:
-        manual = (
-            st.session_state.manual_tariffs[nr]
-        )
-
+        manual = st.session_state.manual_tariffs[nr]
         order["betrag"] = manual["betrag"]
         order["tarif"] = manual["tarif"]
         order["bemerkung"] = (
             f"{order.get('art', '')} / "
             f"{manual['tarif']} · manuell"
         )
+
+    # Storno hat immer Vorrang vor jedem manuellen Preis.
+    if nr in st.session_state.storno_orders:
+        order["betrag"] = 0.0
+        order["tarif"] = "Storno (0 €)"
+        order["bemerkung"] = "Storno (0 €)"
 
     provisioned_orders.append(order)
 
@@ -2390,13 +2703,68 @@ with filter1:
 
 
 # ============================================================
-# LINKE / RECHTE MONITORANSICHT
+# ÜBERSICHT + DIREKTES BEARBEITEN
 # ============================================================
 
-left, right = st.columns(
-    [1, 1],
-    gap="medium",
-)
+
+def parse_money_text(value):
+    value = safe_text(value).replace("€", "").replace(" ", "")
+    if not value:
+        return None
+    # Deutsch: 1.234,56 -> 1234.56 / 27,50 -> 27.50
+    if "," in value:
+        value = value.replace(".", "").replace(",", ".")
+    try:
+        amount = float(value)
+    except ValueError:
+        return None
+    if amount < 0 or amount > 10000:
+        return None
+    return round(amount, 2)
+
+
+def quality_label(quality):
+    if quality == "exact":
+        return "✓ exakt"
+    if quality == "estimated":
+        return "~ geschätzt"
+    return "⚠ unbekannt"
+
+
+def apply_inline_changes(order, zone_choice, tariff_choice, custom_amount_text):
+    nr = order["nr"]
+
+    if is_adac_order(
+        order.get("ag", ""), order.get("art", ""),
+        order.get("raw_nr", ""), order.get("stat", ""),
+    ):
+        if zone_choice == "Automatisch":
+            st.session_state.manual_zones.pop(nr, None)
+            order["manual_zone"] = None
+        elif zone_choice in ZONE_RANK:
+            st.session_state.manual_zones[nr] = zone_choice
+            order["manual_zone"] = zone_choice
+        order["geofence_checked"] = False
+        calculate_adac_order(order, force=True)
+
+    custom_amount = parse_money_text(custom_amount_text)
+
+    if tariff_choice != "Keine Änderung":
+        for label, short, amount in TARIFFS:
+            if label == tariff_choice:
+                st.session_state.manual_tariffs[nr] = {
+                    "tarif": short,
+                    "betrag": float(custom_amount if custom_amount is not None else amount),
+                }
+                break
+    elif custom_amount is not None:
+        st.session_state.manual_tariffs[nr] = {
+            "tarif": order.get("tarif") or "Manueller Betrag",
+            "betrag": float(custom_amount),
+        }
+
+
+left, right = st.columns([0.82, 1.18], gap="large")
 
 
 # ------------------------------------------------------------
@@ -2404,46 +2772,28 @@ left, right = st.columns(
 # ------------------------------------------------------------
 with left:
     st.subheader("📥 Alle Aufträge")
+    st.caption("✓ = bereits in der Provision. Weitere Touren kannst du oben per Nummer oder Kennzeichen hinzufügen.")
 
     left_orders = [
-        o
-        for o in driver_orders
-        if (
-            not only_problems
-            or o.get("zone_warning")
-        )
+        o for o in driver_orders
+        if (not only_problems or o.get("zone_warning"))
     ]
 
     left_rows = []
-
     for order in left_orders:
         nr = order["nr"]
-
         in_provision = (
             nr in st.session_state.manual_added
-            and nr
-            not in st.session_state.removed_orders
+            and nr not in st.session_state.removed_orders
         )
-
-        standby = is_in_standby(
-            order,
-            selected_friday,
-        )
-
+        standby = is_in_standby(order, selected_friday)
         left_rows.append({
             "✓": "✓" if in_provision else "",
-            "Zeit": (
-                f"{order['datum']} "
-                f"{order['zeit']}"
-            ),
+            "Zeit": f"{order['datum']} {order['zeit']}",
             "Auftrag": order["nr"],
             "Kennzeichen": order["kfz"],
             "Auftraggeber": order["ag"],
-            "Start": order["start"],
-            "Ziel": order["ziel"],
-            "Bereitschaft": (
-                "JA" if standby else ""
-            ),
+            "Bereitschaft": "JA" if standby else "",
         })
 
     if left_rows:
@@ -2451,386 +2801,183 @@ with left:
             pd.DataFrame(left_rows),
             use_container_width=True,
             hide_index=True,
-            height=520,
+            height=560,
         )
     else:
-        st.info(
-            "Keine Aufträge für diesen Filter."
-        )
-
-    st.caption(
-        "Nicht automatisch übernommene Touren "
-        "können oben jederzeit per Auftragsnummer "
-        "oder Kennzeichen hinzugefügt werden."
-    )
+        st.info("Keine Aufträge für diesen Filter.")
 
 
 # ------------------------------------------------------------
-# RECHTS: PROVISION
+# RECHTS: PROVISION DIREKT BEARBEITEN
 # ------------------------------------------------------------
 with right:
-    st.subheader("💰 Provision")
+    st.subheader("💰 Provision direkt bearbeiten")
+    st.caption("Preis, ADAC-Zone, Storno und Entfernen stehen jetzt direkt beim jeweiligen Auftrag. Endlich keine Knopf-Schnitzeljagd mehr.")
 
     display_orders = [
-        o
-        for o in provisioned_orders
-        if (
-            not only_problems
-            or o.get("zone_warning")
-        )
+        o for o in provisioned_orders
+        if (not only_problems or o.get("zone_warning"))
     ]
 
-    right_rows = []
+    if not display_orders:
+        st.info("Noch keine provisionierten Aufträge.")
 
     for order in display_orders:
-        zone_display = (
-            order.get("zone_text")
-            or order.get("tarif")
-            or ""
+        nr = order["nr"]
+        is_adac = is_adac_order(
+            order.get("ag", ""), order.get("art", ""),
+            order.get("raw_nr", ""), order.get("stat", ""),
         )
+        is_manual_tariff = nr in st.session_state.manual_tariffs
+        is_manual_zone = nr in st.session_state.manual_zones
+        is_storno_manual = nr in st.session_state.storno_orders
 
-        if order.get("zone_warning"):
-            zone_display = (
-                "⚠ " + zone_display
-            )
+        with st.container(border=True):
+            h1, h2, h3, h4 = st.columns([1.15, 1.0, 1.65, 0.85])
+            with h1:
+                st.markdown(f"**#{nr}**")
+                st.caption(f"{order['datum']} · {order['zeit']}")
+            with h2:
+                st.markdown(f"**{order.get('kfz') or '–'}**")
+                st.caption(order.get("ag") or "–")
+            with h3:
+                zone_or_tariff = order.get("zone_text") if is_adac else order.get("tarif")
+                st.markdown(f"**{zone_or_tariff or '–'}**")
+                if is_adac and order.get("zone_warning"):
+                    st.caption("⚠ Adresse/Zone bitte prüfen")
+                elif is_manual_tariff or is_manual_zone:
+                    st.caption("Manuell angepasst")
+            with h4:
+                st.markdown(f"### {euro(order.get('betrag', 0.0))}")
 
-        right_rows.append({
-            "Zeit": (
-                f"{order['datum']} "
-                f"{order['zeit']}"
-            ),
-            "Auftrag": order["nr"],
-            "Kennzeichen": order["kfz"],
-            "Zone / Tarif": zone_display,
-            "Betrag": euro(
-                order.get("betrag", 0.0)
-            ),
-        })
-
-    if right_rows:
-        st.dataframe(
-            pd.DataFrame(right_rows),
-            use_container_width=True,
-            hide_index=True,
-            height=360,
-        )
-    else:
-        st.info(
-            "Noch keine provisionierten "
-            "Aufträge."
-        )
-
-
-# ============================================================
-# AUFTRAG BEARBEITEN
-# ============================================================
-
-if provisioned_orders:
-    st.markdown("#### ✏️ Auftrag bearbeiten")
-
-    edit_labels = [
-        (
-            f"{o['nr']} | {o['kfz']} | "
-            f"{euro(o.get('betrag', 0))}"
-        )
-        for o in provisioned_orders
-    ]
-
-    edit_label = st.selectbox(
-        "Auftrag auswählen",
-        edit_labels,
-        label_visibility="collapsed",
-    )
-
-    edit_index = edit_labels.index(
-        edit_label
-    )
-
-    edit_order = provisioned_orders[
-        edit_index
-    ]
-
-    edit_nr = edit_order["nr"]
-
-    e1, e2, e3, e4 = st.columns(
-        [1, 1, 1, 1]
-    )
-
-    with e1:
-        if st.button(
-            "↩️ Entfernen",
-            use_container_width=True,
-        ):
-            st.session_state.removed_orders.add(
-                edit_nr
-            )
-
-            st.session_state.manual_added.discard(
-                edit_nr
-            )
-
-            st.rerun()
-
-    with e2:
-        if st.button(
-            "🚫 Storno 0 €",
-            use_container_width=True,
-        ):
-            st.session_state.storno_orders.add(
-                edit_nr
-            )
-
-            st.rerun()
-
-    with e3:
-        if st.button(
-            "♻️ Storno zurück",
-            use_container_width=True,
-        ):
-            st.session_state.storno_orders.discard(
-                edit_nr
-            )
-
-            st.rerun()
-
-    with e4:
-        if (
-            is_adac_order(
-                edit_order.get("ag", ""),
-                edit_order.get("art", ""),
-                edit_order.get("raw_nr", ""),
-                edit_order.get("stat", ""),
-            )
-            and st.button(
-                "🌍 Neu prüfen",
-                use_container_width=True,
-            )
-        ):
-            edit_order["geofence_checked"] = False
-
-            calculate_adac_order(
-                edit_order,
-                force=True,
-            )
-
-            st.rerun()
-
-
-    # --------------------------------------------------------
-    # ADAC DETAILS / MANUELLE ZONE
-    # --------------------------------------------------------
-    if is_adac_order(
-        edit_order.get("ag", ""),
-        edit_order.get("art", ""),
-        edit_order.get("raw_nr", ""),
-        edit_order.get("stat", ""),
-    ):
-        def coord_text(lat, lon):
-            if lat is None or lon is None:
-                return "–"
-            return f"{lat:.6f}, {lon:.6f}"
-
-        st.markdown(
-            f"**Start (OnStreet):** {edit_order.get('start') or '–'}  \n"
-            f"**Start bereinigt:** {edit_order.get('start_cleaned_address') or '–'}  \n"
-            f"**Start Koordinate:** {coord_text(edit_order.get('start_lat'), edit_order.get('start_lon'))}  \n"
-            f"**Ziel (OnStreet):** {edit_order.get('ziel') or '–'}  \n"
-            f"**Ziel bereinigt:** {edit_order.get('target_cleaned_address') or '–'}  \n"
-            f"**Ziel Koordinate:** {coord_text(edit_order.get('target_lat'), edit_order.get('target_lon'))}  \n"
-            f"**Erkennung:** {edit_order.get('zone_text') or 'noch nicht geprüft'}"
-        )
-
-        if edit_order.get("zone_warning"):
-            st.warning(
-                "Mindestens eine Adresse konnte "
-                "nicht sicher über das echte "
-                "Geofence bestimmt werden. "
-                "Bitte Zone prüfen."
-            )
-
-        z1, z2 = st.columns(
-            [2, 1]
-        )
-
-        current_zone = (
-            st.session_state.manual_zones.get(
-                edit_nr
-            )
-            or edit_order.get("final_zone")
-            or "FP 1"
-        )
-
-        zone_options = [
-            "FP 1",
-            "FP 2",
-            "FP 3",
-        ]
-
-        with z1:
-            manual_zone = st.selectbox(
-                "Manuelle ADAC-Zone",
-                zone_options,
-                index=zone_options.index(
-                    current_zone
-                ),
-                key=f"zone_{edit_nr}",
-            )
-
-        with z2:
-            st.write("")
-            if st.button(
-                "💾 Zone übernehmen",
-                use_container_width=True,
-                key=f"save_zone_{edit_nr}",
-            ):
-                st.session_state.manual_zones[
-                    edit_nr
-                ] = manual_zone
-
-                edit_order["manual_zone"] = (
-                    manual_zone
+            # Preis direkt am Auftrag: Auswahl + freier Betrag nebeneinander.
+            p1, p2 = st.columns([1.7, 1.0])
+            tariff_options = ["Keine Änderung"] + [t[0] for t in TARIFFS]
+            with p1:
+                tariff_choice = st.selectbox(
+                    "Tarif ändern auf",
+                    tariff_options,
+                    index=0,
+                    key=f"inline_tariff_{nr}",
+                )
+            with p2:
+                custom_amount_text = st.text_input(
+                    "Eigener Betrag €",
+                    value="",
+                    placeholder=f"z. B. {float(order.get('betrag', 0.0)):.2f}",
+                    key=f"inline_amount_{nr}",
+                    help="Optional. Wenn du hier einen Betrag eingibst, überschreibt er den Betrag der Tarifauswahl.",
                 )
 
-                edit_order[
-                    "geofence_checked"
-                ] = False
-
-                calculate_adac_order(
-                    edit_order,
-                    force=True,
+            if is_adac:
+                zone_options = ["Automatisch", "FP 1", "FP 2", "FP 3"]
+                current_manual = st.session_state.manual_zones.get(nr)
+                zone_index = zone_options.index(current_manual) if current_manual in zone_options else 0
+                zone_choice = st.selectbox(
+                    "ADAC-Zone",
+                    zone_options,
+                    index=zone_index,
+                    key=f"inline_zone_{nr}",
+                    help="Automatisch = Koordinaten aus der Adresssuche gegen FP1 → FP2 → FP3 prüfen.",
                 )
-
-                st.rerun()
-
-        if (
-            edit_nr
-            in st.session_state.manual_zones
-        ):
-            if st.button(
-                "Automatische Zone wieder verwenden",
-                key=f"auto_zone_{edit_nr}",
-            ):
-                del st.session_state.manual_zones[
-                    edit_nr
-                ]
-
-                edit_order["manual_zone"] = None
-                edit_order[
-                    "geofence_checked"
-                ] = False
-
-                calculate_adac_order(
-                    edit_order,
-                    force=True,
-                )
-
-                st.rerun()
-
-
-    # --------------------------------------------------------
-    # TARIF MANUELL
-    # --------------------------------------------------------
-    with st.expander(
-        "Tarif / Betrag manuell ändern",
-        expanded=False,
-    ):
-        tariff_names = [
-            t[0]
-            for t in TARIFFS
-        ] + ["Freier Betrag..."]
-
-        tariff_choice = st.selectbox(
-            "Tarif",
-            tariff_names,
-            key=f"tariff_choice_{edit_nr}",
-        )
-
-        custom_amount = 25.0
-
-        if tariff_choice == "Freier Betrag...":
-            custom_amount = st.number_input(
-                "Betrag in €",
-                min_value=0.0,
-                max_value=1000.0,
-                value=float(
-                    edit_order.get(
-                        "betrag",
-                        25.0,
-                    )
-                ),
-                step=5.0,
-                key=f"custom_amount_{edit_nr}",
-            )
-
-        if st.button(
-            "💾 Tarif speichern",
-            use_container_width=True,
-            key=f"save_tariff_{edit_nr}",
-        ):
-            if tariff_choice == "Freier Betrag...":
-                st.session_state.manual_tariffs[
-                    edit_nr
-                ] = {
-                    "tarif": (
-                        f"Manuell "
-                        f"({custom_amount:.2f} €)"
-                    ),
-                    "betrag": float(
-                        custom_amount
-                    ),
-                }
-
             else:
-                for (
-                    label,
-                    short,
-                    amount,
-                ) in TARIFFS:
-                    if label == tariff_choice:
-                        st.session_state.manual_tariffs[
-                            edit_nr
-                        ] = {
-                            "tarif": short,
-                            "betrag": float(
-                                amount
-                            ),
-                        }
-                        break
+                zone_choice = "Automatisch"
 
-            st.rerun()
+            a1, a2, a3, a4 = st.columns([1.15, 1.0, 1.0, 1.0])
+            with a1:
+                if st.button("💾 Speichern", key=f"inline_save_{nr}", use_container_width=True):
+                    amount_candidate = parse_money_text(custom_amount_text)
+                    if custom_amount_text.strip() and amount_candidate is None:
+                        st.error("Der freie Betrag ist ungültig. Beispiel: 27,50")
+                    else:
+                        apply_inline_changes(order, zone_choice, tariff_choice, custom_amount_text)
+                        st.rerun()
 
-        if (
-            edit_nr
-            in st.session_state.manual_tariffs
-        ):
-            if st.button(
-                "Manuellen Tarif zurücksetzen",
-                key=f"reset_tariff_{edit_nr}",
-            ):
-                del st.session_state.manual_tariffs[
-                    edit_nr
-                ]
+            with a2:
+                storno_label = "♻️ Storno zurück" if is_storno_manual else "🚫 Storno 0 €"
+                if st.button(storno_label, key=f"inline_storno_{nr}", use_container_width=True):
+                    if is_storno_manual:
+                        st.session_state.storno_orders.discard(nr)
+                    else:
+                        st.session_state.storno_orders.add(nr)
+                    st.rerun()
 
-                edit_order[
-                    "geofence_checked"
-                ] = False
+            with a3:
+                if st.button("↩️ Entfernen", key=f"inline_remove_{nr}", use_container_width=True):
+                    st.session_state.removed_orders.add(nr)
+                    st.session_state.manual_added.discard(nr)
+                    st.rerun()
 
-                if is_adac_order(
-                    edit_order.get("ag", ""),
-                    edit_order.get("art", ""),
-                    edit_order.get(
-                        "raw_nr",
-                        "",
-                    ),
-                    edit_order.get("stat", ""),
+            with a4:
+                if is_adac:
+                    if st.button("🌍 Neu prüfen", key=f"inline_recheck_{nr}", use_container_width=True):
+                        # Aktuelle v4-Cache-Einträge dieser beiden Adressen entfernen, damit wirklich neu gesucht wird.
+                        for raw_addr in [order.get("start", ""), order.get("ziel", "")]:
+                            cleaned = clean_onstreet_address(raw_addr)
+                            canonical = cleaned.get("address") or cleaned.get("search_text")
+                            if canonical:
+                                try:
+                                    with get_db_connection() as conn:
+                                        conn.execute("DELETE FROM geocode_cache WHERE cache_key = ?", (address_cache_key(canonical),))
+                                        conn.commit()
+                                except Exception:
+                                    pass
+                        order["geofence_checked"] = False
+                        calculate_adac_order(order, force=True)
+                        st.rerun()
+                else:
+                    if (is_manual_tariff or is_manual_zone) and st.button(
+                        "↩️ Reset", key=f"inline_reset_{nr}", use_container_width=True
+                    ):
+                        st.session_state.manual_tariffs.pop(nr, None)
+                        st.session_state.manual_zones.pop(nr, None)
+                        st.rerun()
+
+            if is_manual_tariff or is_manual_zone:
+                if st.button(
+                    "Automatische Werte wiederherstellen",
+                    key=f"inline_full_reset_{nr}",
+                    use_container_width=False,
                 ):
-                    calculate_adac_order(
-                        edit_order,
-                        force=True,
-                    )
+                    st.session_state.manual_tariffs.pop(nr, None)
+                    st.session_state.manual_zones.pop(nr, None)
+                    order["manual_zone"] = None
+                    order["geofence_checked"] = False
+                    if is_adac:
+                        calculate_adac_order(order, force=True)
+                    st.rerun()
 
-                st.rerun()
+            if is_adac:
+                with st.expander("📍 Adresssuche / FP-Prüfung", expanded=bool(order.get("zone_warning"))):
+                    def coord_text(lat, lon):
+                        if lat is None or lon is None:
+                            return "–"
+                        return f"{lat:.6f}, {lon:.6f}"
 
+                    s1, s2 = st.columns(2)
+                    with s1:
+                        st.markdown("**Start**")
+                        st.write(order.get("start") or "–")
+                        st.caption(f"Bereinigt: {order.get('start_cleaned_address') or '–'}")
+                        st.caption(f"Suchanfrage: {order.get('start_query_used') or '–'}")
+                        st.caption(f"Koordinate: {coord_text(order.get('start_lat'), order.get('start_lon'))}")
+                        st.caption(f"Status: {quality_label(order.get('start_quality'))} · {order.get('start_message') or ''}")
+                        if order.get("start_display_name"):
+                            st.caption(f"OSM-Treffer: {order.get('start_display_name')}")
+                    with s2:
+                        st.markdown("**Ziel**")
+                        st.write(order.get("ziel") or "–")
+                        st.caption(f"Bereinigt: {order.get('target_cleaned_address') or '–'}")
+                        st.caption(f"Suchanfrage: {order.get('target_query_used') or '–'}")
+                        st.caption(f"Koordinate: {coord_text(order.get('target_lat'), order.get('target_lon'))}")
+                        if order.get("ziel"):
+                            st.caption(f"Status: {quality_label(order.get('target_quality'))} · {order.get('target_message') or ''}")
+                        else:
+                            st.caption("Status: kein Ziel vorhanden")
+                        if order.get("target_display_name"):
+                            st.caption(f"OSM-Treffer: {order.get('target_display_name')}")
+
+                    st.caption("Zonenregel: Einzelpunkt FP1 → FP2 → FP3. Für die gesamte Tour gewinnt anschließend die höhere Zone.")
 
 # ============================================================
 # PROBLEMFÄLLE KOMPAKT
