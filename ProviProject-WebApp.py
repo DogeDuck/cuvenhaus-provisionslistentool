@@ -1,16 +1,16 @@
 import csv
+from datetime import datetime, timedelta
 import hashlib
 import html
 import io
 import re
-from datetime import datetime
 
 import pandas as pd
 import streamlit as st
 
 
 # ============================================================
-# PDF
+# PDF-MODUL
 # ============================================================
 
 try:
@@ -24,14 +24,13 @@ try:
         Table,
         TableStyle,
     )
-
     HAS_REPORTLAB = True
 except ImportError:
     HAS_REPORTLAB = False
 
 
 # ============================================================
-# APP
+# STREAMLIT
 # ============================================================
 
 st.set_page_config(
@@ -51,142 +50,117 @@ st.markdown(
 <style>
 
 .block-container {
-    max-width: 1180px;
-    padding-top: 1.4rem;
+    max-width: 1450px;
+    padding-top: 1.2rem;
     padding-bottom: 4rem;
 }
 
 h1 {
-    margin-bottom: .15rem !important;
+    margin-bottom: 0.15rem !important;
 }
 
 .cv-subtitle {
     color: #64748b;
-    margin-bottom: 1.4rem;
+    margin-bottom: 1rem;
 }
 
-.cv-steps {
-    display:flex;
-    gap:7px;
-    flex-wrap:wrap;
-    margin:12px 0 24px 0;
-}
-
-.cv-step {
-    padding:7px 12px;
-    border-radius:999px;
-    background:#f1f5f9;
-    border:1px solid #e2e8f0;
-    font-size:.82rem;
-    font-weight:600;
-}
-
-.cv-step-done {
-    background:#ecfdf5;
-    border-color:#bbf7d0;
-    color:#166534;
-}
-
-.cv-section {
-    margin-top:1.5rem;
-    margin-bottom:.5rem;
-    font-size:1.25rem;
-    font-weight:700;
+.cv-shift {
+    padding: 12px 15px;
+    border: 1px solid #bbf7d0;
+    background: #f0fdf4;
+    border-radius: 12px;
+    margin: 10px 0 16px 0;
 }
 
 .cv-card {
-    border:1px solid #e2e8f0;
-    border-radius:15px 15px 6px 6px;
-    padding:15px 16px 13px 16px;
-    background:white;
-    margin-top:12px;
+    border: 1px solid #e2e8f0;
+    border-radius: 13px 13px 5px 5px;
+    padding: 13px 14px 11px 14px;
+    margin-top: 10px;
+    background: white;
+}
+
+.cv-card-provi {
+    border-left: 4px solid #22c55e;
+}
+
+.cv-card-storno {
+    border-left: 4px solid #ef4444;
+    opacity: 0.8;
 }
 
 .cv-card-top {
-    display:flex;
-    justify-content:space-between;
-    align-items:center;
-    gap:12px;
-}
-
-.cv-status {
-    font-size:.72rem;
-    font-weight:800;
-    letter-spacing:.04em;
-}
-
-.cv-open {
-    color:#64748b;
-}
-
-.cv-done {
-    color:#15803d;
-}
-
-.cv-storno {
-    color:#b91c1c;
-}
-
-.cv-price {
-    font-size:1.15rem;
-    font-weight:750;
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: center;
 }
 
 .cv-order {
-    font-size:1.03rem;
-    font-weight:700;
-    margin-top:13px;
+    font-weight: 750;
+    font-size: 1rem;
+}
+
+.cv-price {
+    font-weight: 750;
+    font-size: 1.05rem;
 }
 
 .cv-meta {
-    color:#64748b;
-    font-size:.88rem;
-    margin-top:3px;
+    color: #64748b;
+    font-size: .84rem;
+    margin-top: 4px;
 }
 
 .cv-tariff {
-    margin-top:9px;
-    font-size:.83rem;
-    color:#475569;
+    font-size: .82rem;
+    margin-top: 7px;
+    color: #334155;
+}
+
+.cv-auto {
+    display: inline-block;
+    font-size: .7rem;
+    font-weight: 750;
+    color: #166534;
+    background: #dcfce7;
+    border-radius: 999px;
+    padding: 3px 7px;
+    margin-top: 7px;
+}
+
+.cv-storno-label {
+    display: inline-block;
+    font-size: .7rem;
+    font-weight: 750;
+    color: #991b1b;
+    background: #fee2e2;
+    border-radius: 999px;
+    padding: 3px 7px;
+    margin-top: 7px;
+}
+
+div[data-testid="stMetric"] {
+    border: 1px solid #e2e8f0;
+    padding: 12px 15px;
+    border-radius: 12px;
+    background: white;
 }
 
 div[data-testid="stButton"] button,
 div[data-testid="stDownloadButton"] button {
-    min-height:44px;
-    border-radius:9px;
-    font-weight:600;
+    min-height: 42px;
+    border-radius: 8px;
 }
 
-div[data-testid="stMetric"] {
-    border:1px solid #e2e8f0;
-    padding:14px 16px;
-    border-radius:13px;
-    background:#fff;
-}
-
-@media (max-width: 700px) {
-
+@media (max-width: 800px) {
     .block-container {
-        padding-left:1rem;
-        padding-right:1rem;
-        padding-top:1rem;
-    }
-
-    .cv-steps {
-        gap:5px;
-    }
-
-    .cv-step {
-        font-size:.72rem;
-        padding:6px 9px;
+        padding-left: 0.8rem;
+        padding-right: 0.8rem;
     }
 
     .cv-card {
-        padding:14px;
-    }
-
-    div[data-testid="stHorizontalBlock"] {
-        gap:.5rem;
+        padding: 11px;
     }
 }
 
@@ -269,82 +243,160 @@ def parse_dt(value):
 
 
 def order_datetime(order):
-    value = f"{order.get('datum', '')} {order.get('zeit', '')}".strip()
-    return parse_dt(value) or parse_dt(order.get("datum", ""))
+    combined = (
+        f"{order.get('datum', '')} "
+        f"{order.get('zeit', '')}"
+    ).strip()
+
+    return (
+        parse_dt(combined)
+        or parse_dt(order.get("datum", ""))
+    )
 
 
 def format_date(value):
-    dt = parse_dt(str(value))
+    dt = parse_dt(value)
 
     if not dt:
         return str(value)
 
-    weekdays = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
+    weekdays = [
+        "Mo", "Di", "Mi",
+        "Do", "Fr", "Sa", "So"
+    ]
 
-    return f"{weekdays[dt.weekday()]}, {dt.strftime('%d.%m.%Y')}"
+    return (
+        f"{weekdays[dt.weekday()]}, "
+        f"{dt.strftime('%d.%m.%Y')}"
+    )
 
+
+# ============================================================
+# ADAC FESTPREISGEBIETE
+# ============================================================
 
 def detect_adac_zone(einsatzort_str):
 
     text = str(einsatzort_str or "").lower()
 
     plz_match = re.search(
-        r"\\b(5\\d{4}|50\\d{3}|51\\d{3})\\b",
+        r"\b(5\d{4}|50\d{3}|51\d{3})\b",
         text,
     )
 
-    plz = plz_match.group(1) if plz_match else ""
+    plz = (
+        plz_match.group(1)
+        if plz_match
+        else ""
+    )
 
-    # FP3 – lila
+    # --------------------------------------------------------
+    # FP3 – LILA – 35 €
+    # --------------------------------------------------------
+
     fp3_plz = {
-        "53359", "53913", "53919", "50321", "50354", "50374",
-        "51503", "53819", "53804", "53809", "53567", "53577",
-        "53560", "53545", "53424", "53489", "53501", "53474",
+        "53359", "53913", "53919",
+        "50321", "50354", "50374",
+        "51503", "53819", "53804",
+        "53809", "53567", "53577",
+        "53560", "53545", "53424",
+        "53489", "53501", "53474",
         "50996", "50997", "50999",
     }
 
     fp3_places = [
-        "rheinbach", "swisttal", "heimerzheim", "odendorf",
-        "weilerswist", "brühl", "hürth", "erftstadt", "liblar",
-        "rösrath", "neunkirchen", "seelscheid", "much",
-        "ruppichteroth", "uckerath", "blankenberg", "buchholz",
-        "asbach", "neustadt (wied)", "neustadt wied",
-        "vettelschoß", "linz am rhein", "linz", "remagen",
-        "sinzig", "grafschaft", "neuenahr", "ahrweiler",
+        "rheinbach",
+        "swisttal",
+        "heimerzheim",
+        "odendorf",
+        "weilerswist",
+        "brühl",
+        "hürth",
+        "erftstadt",
+        "liblar",
+        "rösrath",
+        "neunkirchen",
+        "seelscheid",
+        "much",
+        "ruppichteroth",
+        "uckerath",
+        "blankenberg",
+        "buchholz",
+        "asbach",
+        "neustadt (wied)",
+        "neustadt wied",
+        "vettelschoß",
+        "linz am rhein",
+        "linz",
+        "remagen",
+        "sinzig",
+        "grafschaft",
+        "neuenahr",
+        "ahrweiler",
         "rodenkirchen",
     ]
 
     if (
         plz in fp3_plz
         or any(
-            re.search(r"\\b" + re.escape(place) + r"\\b", text)
+            re.search(
+                r"\b" + re.escape(place) + r"\b",
+                text,
+            )
             for place in fp3_places
         )
     ):
         return "FP 3", 35.00
 
-    # FP2 – gelb
+    # --------------------------------------------------------
+    # FP2 – GELB – 30 €
+    # --------------------------------------------------------
+
     fp2_plz = {
-        "53111", "53113", "53115", "53117", "53119",
-        "53121", "53123", "53125", "53127", "53129",
-        "53173", "53175", "53177", "53332", "53347",
-        "50389", "53721", "53773", "53797", "53340",
-        "53343", "53572",
+        "53111", "53113", "53115",
+        "53117", "53119", "53121",
+        "53123", "53125", "53127",
+        "53129", "53173", "53175",
+        "53177", "53332", "53347",
+        "50389", "53721", "53773",
+        "53797", "53340", "53343",
+        "53572",
     }
 
     fp2_places = [
-        "siegburg", "hennef", "bornheim", "merten",
-        "roisdorf", "alfter", "oedekoven", "witterschlick",
-        "wesseling", "lohmar", "meckenheim", "wachtberg",
-        "unkel", "oberpleis", "thomasberg", "ittenbach",
-        "aegidienberg", "duisdorf", "endenich", "tannenbusch",
-        "röttgen", "venusberg", "godesberg", "hardtberg",
+        "siegburg",
+        "hennef",
+        "bornheim",
+        "merten",
+        "roisdorf",
+        "alfter",
+        "oedekoven",
+        "witterschlick",
+        "wesseling",
+        "lohmar",
+        "meckenheim",
+        "wachtberg",
+        "unkel",
+        "oberpleis",
+        "thomasberg",
+        "ittenbach",
+        "aegidienberg",
+        "duisdorf",
+        "endenich",
+        "tannenbusch",
+        "röttgen",
+        "venusberg",
+        "godesberg",
+        "hardtberg",
     ]
 
     if (
         plz in fp2_plz
         or any(
-            re.search(r"\\b" + re.escape(place) + r"\\b", text)
+            re.search(
+                r"\b" + re.escape(place) + r"\b",
+                text,
+            )
             for place in fp2_places
         )
     ):
@@ -353,19 +405,34 @@ def detect_adac_zone(einsatzort_str):
     if (
         "bonn" in text
         and not any(
-            value in text
-            for value in [
-                "beuel", "geislar", "pützchen", "holzlar",
-                "oberkassel", "vilich", "mehlem",
-                "53225", "53227", "53229", "53179",
+            place in text
+            for place in [
+                "beuel",
+                "geislar",
+                "pützchen",
+                "holzlar",
+                "oberkassel",
+                "vilich",
+                "mehlem",
+                "53225",
+                "53227",
+                "53229",
+                "53179",
             ]
         )
     ):
         return "FP 2", 30.00
 
-    # FP1 – grün
+    # --------------------------------------------------------
+    # FP1 – GRÜN – 25 €
+    # --------------------------------------------------------
+
     return "FP 1", 25.00
 
+
+# ============================================================
+# TARIFERKENNUNG
+# ============================================================
 
 def match_tariff_rule(stat, ag, art, nr, ort):
 
@@ -380,14 +447,18 @@ def match_tariff_rule(stat, ag, art, nr, ort):
     )
 
     is_fehlfahrt = any(
-        x in combined
-        for x in ["fehlfahrt", "leerfahrt", "leer"]
+        word in combined
+        for word in [
+            "fehlfahrt",
+            "leerfahrt",
+            "leer",
+        ]
     )
 
     is_storno = (
         any(
-            x in combined
-            for x in [
+            word in combined
+            for word in [
                 "storno",
                 "storniert",
                 "abgebrochen",
@@ -399,23 +470,34 @@ def match_tariff_rule(stat, ag, art, nr, ort):
         and not is_fehlfahrt
     )
 
+    # Storno = 0 €
     if is_storno:
-        return "Storno (0 €)", 0.0
+        return "Storno (0 €)", 0.00
 
-    if "stadt bonn" in ag_l or (
-        "stadt" in ag_l and "bonn" in ag_l
+    # Stadt Bonn
+    if (
+        "stadt bonn" in ag_l
+        or (
+            "stadt" in ag_l
+            and "bonn" in ag_l
+        )
     ):
         if is_fehlfahrt:
             return "Stadt Bonn Leerfahrt", 30.00
 
         return "Stadt Bonn Voll/Vers.", 30.00
 
-    if "parknotruf" in ag_l or "pnr" in combined:
+    # Parknotruf
+    if (
+        "parknotruf" in ag_l
+        or "pnr" in combined
+    ):
         if is_fehlfahrt:
             return "Parknotruf Leerfahrt", 10.00
 
         return "Parknotruf Voll", 40.00
 
+    # Werkstatt / Mietwagen
     if (
         "leihwagen" in combined
         or "mietwagen" in combined
@@ -425,8 +507,12 @@ def match_tariff_rule(stat, ag, art, nr, ort):
             and "adac" not in combined
         )
     ):
-        return "Werkstatt / Gutachten / Leihwagen", 50.00
+        return (
+            "Werkstatt / Gutachten / Leihwagen",
+            50.00,
+        )
 
+    # Polizei
     if "polizei bonn" in ag_l:
         return "Polizei Bonn", 30.00
 
@@ -437,24 +523,44 @@ def match_tariff_rule(stat, ag, art, nr, ort):
     ):
         return "Polizei Siegburg", 30.00
 
-    if "falschparker" in art_l and "stadt" not in ag_l:
+    # Falschparker
+    if (
+        "falschparker" in art_l
+        and "stadt" not in ag_l
+    ):
         return "Falschparker privat", 30.00
 
+    # Selbstzahler
     if (
         "selbstzahler" in combined
         or "eigener wunsch" in combined
     ):
         return "Selbstzahler", 30.00
 
-    if "adac" in ag_l or "adac" in combined:
+    # ADAC
+    if (
+        "adac" in ag_l
+        or "adac" in combined
+    ):
 
-        zone, rate = detect_adac_zone(ort)
+        zone_name, zone_rate = (
+            detect_adac_zone(ort)
+        )
 
+        # WICHTIG:
+        # Fehlfahrten werden bezahlt.
         if is_fehlfahrt:
-            return f"ADAC {zone} Fehlfahrt", rate
+            return (
+                f"ADAC {zone_name} Fehlfahrt",
+                zone_rate,
+            )
 
-        return f"ADAC {zone}", rate
+        return (
+            f"ADAC {zone_name}",
+            zone_rate,
+        )
 
+    # Andere Fehl-/Leerfahrt ohne Tarifregel
     if is_fehlfahrt:
         return "Fehlfahrt (0 €)", 0.00
 
@@ -462,10 +568,120 @@ def match_tariff_rule(stat, ag, art, nr, ort):
 
 
 # ============================================================
+# BEREITSCHAFT
+#
+# Freitag 21:00 Uhr
+# bis
+# Sonntag 21:00 Uhr
+# ============================================================
+
+def get_shift_for_datetime(dt):
+    """
+    Gibt Beginn und Ende des Bereitschafts-Wochenendes
+    zurück, zu dem ein Datum gehört bzw. dessen Freitag
+    in derselben Kalenderwoche liegt.
+    """
+
+    if dt is None:
+        return None, None
+
+    # Montag der betreffenden Woche
+    monday = (
+        dt
+        - timedelta(days=dt.weekday())
+    ).replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+
+    friday = monday + timedelta(days=4)
+
+    start = friday.replace(
+        hour=21,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+
+    sunday = monday + timedelta(days=6)
+
+    end = sunday.replace(
+        hour=21,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+
+    return start, end
+
+
+def is_in_standby(order, shift_start, shift_end):
+
+    dt = order_datetime(order)
+
+    if not dt:
+        return False
+
+    return (
+        shift_start
+        <= dt
+        <= shift_end
+    )
+
+
+def get_available_shifts(orders):
+    """
+    Sucht alle Wochenenden, die in der CSV relevant sind.
+    """
+
+    shifts = {}
+
+    for order in orders.values():
+
+        dt = order_datetime(order)
+
+        if not dt:
+            continue
+
+        start, end = get_shift_for_datetime(dt)
+
+        if start is None:
+            continue
+
+        key = start.strftime("%Y-%m-%d")
+
+        shifts[key] = (
+            start,
+            end,
+        )
+
+    return sorted(
+        shifts.values(),
+        key=lambda x: x[0],
+        reverse=True,
+    )
+
+
+def shift_label(shift):
+    start, end = shift
+
+    return (
+        f"Fr {start.strftime('%d.%m.%Y')} · 21:00 "
+        f"→ So {end.strftime('%d.%m.%Y')} · 21:00"
+    )
+
+
+# ============================================================
 # PDF
 # ============================================================
 
-def generate_pdf_bytes(rows, driver_name, month_str):
+def generate_pdf_bytes(
+    rows,
+    driver_name,
+    period_string,
+):
 
     buf = io.BytesIO()
 
@@ -480,7 +696,7 @@ def generate_pdf_bytes(rows, driver_name, month_str):
 
     styles = getSampleStyleSheet()
 
-    normal = ParagraphStyle(
+    style_normal = ParagraphStyle(
         "CellNormal",
         parent=styles["Normal"],
         fontName="Helvetica",
@@ -488,19 +704,19 @@ def generate_pdf_bytes(rows, driver_name, month_str):
         leading=10.5,
     )
 
-    center = ParagraphStyle(
+    style_center = ParagraphStyle(
         "CellCenter",
-        parent=normal,
+        parent=style_normal,
         alignment=1,
     )
 
-    right = ParagraphStyle(
+    style_right = ParagraphStyle(
         "CellRight",
-        parent=normal,
+        parent=style_normal,
         alignment=2,
     )
 
-    head = ParagraphStyle(
+    style_head = ParagraphStyle(
         "CellHead",
         parent=styles["Normal"],
         fontName="Helvetica-Bold",
@@ -511,80 +727,176 @@ def generate_pdf_bytes(rows, driver_name, month_str):
 
     elements = []
 
-    hdr = Table(
+    header = Table(
         [[
             Paragraph(
-                f"<font size=12><b>Mitarbeiter:</b> "
-                f"{html.escape(driver_name)}</font>",
+                (
+                    "<font size=12>"
+                    "<b>Mitarbeiter:</b> &nbsp; "
+                    f"{html.escape(driver_name)}"
+                    "</font>"
+                ),
                 styles["Normal"],
             ),
             Paragraph(
-                f"<font size=12><b>Zeitraum:</b> "
-                f"{html.escape(month_str)}</font>",
+                (
+                    "<font size=12>"
+                    "<b>Bereitschaft:</b> &nbsp; "
+                    f"{html.escape(period_string)}"
+                    "</font>"
+                ),
                 styles["Normal"],
             ),
         ]],
         colWidths=[420, 360],
     )
 
-    elements.append(hdr)
-    elements.append(Spacer(1, 5))
+    header.setStyle(
+        TableStyle([
+            (
+                "BOTTOMPADDING",
+                (0, 0),
+                (-1, -1),
+                8,
+            ),
+            (
+                "ALIGN",
+                (1, 0),
+                (1, 0),
+                "RIGHT",
+            ),
+        ])
+    )
+
+    elements.append(header)
+    elements.append(Spacer(1, 4))
 
     headers = [
-        Paragraph("<b>DATUM</b>", head),
-        Paragraph("<b>AUFTRAGS-<br/>NUMMER</b>", head),
-        Paragraph("<b>KENNZEICHEN</b>", head),
-        Paragraph("<b>AUFTRAGGEBER</b>", head),
-        Paragraph("<b>BEMERKUNG</b>", head),
-        Paragraph("<b>BETRAG</b>", head),
+        Paragraph("<b>DATUM</b>", style_head),
+        Paragraph(
+            "<b>AUFTRAGS-<br/>NUMMER</b>",
+            style_head,
+        ),
+        Paragraph("<b>KENNZEICHEN</b>", style_head),
+        Paragraph("<b>AUFTRAGGEBER</b>", style_head),
+        Paragraph("<b>BEMERKUNG</b>", style_head),
+        Paragraph("<b>BETRAG</b>", style_head),
     ]
 
-    data = [headers]
+    table_data = [headers]
 
     total = 0.0
 
     for row in rows:
 
         amount = float(row["betrag"])
+
         total += amount
 
-        data.append([
-            Paragraph(html.escape(str(row["datum"])), center),
-            Paragraph(html.escape(str(row["nr"])), center),
-            Paragraph(html.escape(str(row["kfz"])), center),
-            Paragraph(html.escape(str(row["ag"])), normal),
-            Paragraph(html.escape(str(row["bemerkung"])), normal),
-            Paragraph(money(amount), right),
+        table_data.append([
+            Paragraph(
+                html.escape(str(row["datum"])),
+                style_center,
+            ),
+            Paragraph(
+                html.escape(str(row["nr"])),
+                style_center,
+            ),
+            Paragraph(
+                html.escape(str(row["kfz"])),
+                style_center,
+            ),
+            Paragraph(
+                html.escape(str(row["ag"])),
+                style_normal,
+            ),
+            Paragraph(
+                html.escape(str(row["bemerkung"])),
+                style_normal,
+            ),
+            Paragraph(
+                money(amount),
+                style_right,
+            ),
         ])
 
-    for _ in range(max(0, 16 - len(rows))):
-        data.append(["", "", "", "", "", ""])
+    for _ in range(
+        max(0, 16 - len(rows))
+    ):
+        table_data.append(
+            ["", "", "", "", "", ""]
+        )
 
-    data.append([
-        "", "", "", "",
-        Paragraph("<b>SUMME:</b>", right),
-        Paragraph(f"<b>{money(total)}</b>", right),
+    table_data.append([
+        "",
+        "",
+        "",
+        "",
+        Paragraph(
+            "<b>SUMME:</b>",
+            style_right,
+        ),
+        Paragraph(
+            f"<b>{money(total)}</b>",
+            style_right,
+        ),
     ])
 
     table = Table(
-        data,
-        colWidths=[75, 75, 95, 185, 275, 85],
+        table_data,
+        colWidths=[
+            75,
+            75,
+            95,
+            185,
+            275,
+            85,
+        ],
         repeatRows=1,
     )
 
     table.setStyle(
         TableStyle([
-            ("GRID", (0, 0), (-1, -2), 0.7, colors.black),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("TOPPADDING", (0, 0), (-1, -1), 3),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-            ("BOX", (4, -1), (5, -1), 0.9, colors.black),
+            (
+                "GRID",
+                (0, 0),
+                (-1, -2),
+                0.7,
+                colors.black,
+            ),
+            (
+                "VALIGN",
+                (0, 0),
+                (-1, -1),
+                "MIDDLE",
+            ),
+            (
+                "TOPPADDING",
+                (0, 0),
+                (-1, -1),
+                3,
+            ),
+            (
+                "BOTTOMPADDING",
+                (0, 0),
+                (-1, -1),
+                3,
+            ),
+            (
+                "BOX",
+                (4, -1),
+                (5, -1),
+                0.9,
+                colors.black,
+            ),
         ])
     )
 
     elements.append(table)
 
     doc.build(elements)
+
+    buf.seek(0)
 
     return buf.getvalue()
 
@@ -593,25 +905,30 @@ def generate_pdf_bytes(rows, driver_name, month_str):
 # SESSION STATE
 # ============================================================
 
-defaults = {
-    "orders": {},
-    "tour_status": {},
-    "detected_drivers": [],
-    "file_hash": "",
-}
+if "orders" not in st.session_state:
+    st.session_state.orders = {}
 
-for key, value in defaults.items():
-    if key not in st.session_state:
-        st.session_state[key] = value
+if "tour_status" not in st.session_state:
+    st.session_state.tour_status = {}
+
+if "detected_drivers" not in st.session_state:
+    st.session_state.detected_drivers = []
+
+if "file_hash" not in st.session_state:
+    st.session_state.file_hash = ""
+
+if "auto_initialized" not in st.session_state:
+    st.session_state.auto_initialized = ""
 
 
 STATUS_OPEN = "offen"
-STATUS_DONE = "uebernommen"
+STATUS_PROVI = "provisioniert"
 STATUS_REMOVED = "entfernt"
-STATUS_CANCELLED = "storniert"
+STATUS_STORNO = "storniert"
 
 
-def status_of(nr):
+def get_status(nr):
+
     return st.session_state.tour_status.get(
         nr,
         STATUS_OPEN,
@@ -619,30 +936,51 @@ def status_of(nr):
 
 
 def set_status(nr, status):
+
     st.session_state.tour_status[nr] = status
+
+
+def is_storno_order(order):
+
+    tariff = str(
+        order.get("tarif", "")
+    ).lower()
+
+    status = str(
+        order.get("stat", "")
+    ).lower()
+
+    bemerkung = str(
+        order.get("bemerkung", "")
+    ).lower()
+
+    combined = (
+        f"{tariff} {status} {bemerkung}"
+    )
+
+    return any(
+        word in combined
+        for word in [
+            "storno",
+            "storniert",
+            "abgebrochen",
+            "widerrufen",
+            "annulliert",
+            "abgesagt",
+        ]
+    )
 
 
 # ============================================================
 # HEADER
 # ============================================================
 
-st.title("🚜 Cuvenhaus Provision")
-
-st.markdown(
-    '<div class="cv-subtitle">'
-    "Bereitschafts- und Provisionsabrechnung"
-    "</div>",
-    unsafe_allow_html=True,
-)
+st.title("🚜 Cuvenhaus Provisionsabrechnung")
 
 st.markdown(
     """
-<div class="cv-steps">
-<div class="cv-step cv-step-done">1 · CSV</div>
-<div class="cv-step">2 · Fahrer</div>
-<div class="cv-step">3 · Schicht</div>
-<div class="cv-step">4 · Touren</div>
-<div class="cv-step">5 · Abrechnung</div>
+<div class="cv-subtitle">
+Bereitschaft automatisch erkennen und abrechnen
 </div>
 """,
     unsafe_allow_html=True,
@@ -650,16 +988,11 @@ st.markdown(
 
 
 # ============================================================
-# 1 CSV
+# CSV IMPORT
 # ============================================================
 
-st.markdown(
-    '<div class="cv-section">1 · CSV importieren</div>',
-    unsafe_allow_html=True,
-)
-
 uploaded_file = st.file_uploader(
-    "OnStreet CSV auswählen",
+    "📂 OnStreet CSV auswählen",
     type=["csv"],
 )
 
@@ -672,7 +1005,10 @@ if uploaded_file is not None:
         raw_bytes
     ).hexdigest()
 
-    if st.session_state.file_hash != current_hash:
+    if (
+        st.session_state.file_hash
+        != current_hash
+    ):
 
         content = raw_bytes.decode(
             "utf-8-sig",
@@ -686,12 +1022,17 @@ if uploaded_file is not None:
         ]
 
         if len(lines) < 2:
-            st.error("Die CSV enthält keine Touren.")
+
+            st.error(
+                "Die CSV enthält keine Aufträge."
+            )
+
             st.stop()
 
         delimiter = (
             ";"
-            if lines[0].count(";") > lines[0].count(",")
+            if lines[0].count(";")
+            > lines[0].count(",")
             else ","
         )
 
@@ -708,29 +1049,70 @@ if uploaded_file is not None:
         ]
 
         def get_idx(candidates):
+
             for i, header in enumerate(headers):
-                if any(c in header for c in candidates):
+
+                if any(
+                    candidate in header
+                    for candidate in candidates
+                ):
                     return i
+
             return None
 
-        idx_stat = get_idx(["aktueller status", "status"])
-        idx_nr = get_idx(["auftrag", "vorgang"])
-        idx_fahrer = get_idx(["fahrer", "mitarbeiter"])
-        idx_annahme = get_idx(["annahme", "datum"])
-        idx_kfz = get_idx(["kennzeichen", "kfz"])
-        idx_ag = get_idx(["auftraggeber", "kunde"])
-        idx_art = get_idx(["auftragsart", "leistung"])
-        idx_ort = get_idx(["einsatzort", "ort", "straße"])
+        idx_stat = get_idx([
+            "aktueller status",
+            "status",
+        ])
+
+        idx_nr = get_idx([
+            "auftrag",
+            "vorgang",
+        ])
+
+        idx_fahrer = get_idx([
+            "fahrer",
+            "mitarbeiter",
+        ])
+
+        idx_annahme = get_idx([
+            "annahme",
+            "datum",
+        ])
+
+        idx_kfz = get_idx([
+            "kennzeichen",
+            "kfz",
+        ])
+
+        idx_ag = get_idx([
+            "auftraggeber",
+            "kunde",
+        ])
+
+        idx_art = get_idx([
+            "auftragsart",
+            "leistung",
+        ])
+
+        idx_ort = get_idx([
+            "einsatzort",
+            "ort",
+            "straße",
+        ])
 
         if idx_nr is None:
+
             st.error(
-                "Die Auftragsnummer konnte in der CSV "
-                "nicht gefunden werden."
+                "Die Spalte mit der Auftragsnummer "
+                "wurde nicht gefunden."
             )
+
             st.stop()
 
         new_orders = {}
-        drivers = set()
+
+        found_drivers = set()
 
         for row in rows[1:]:
 
@@ -738,8 +1120,13 @@ if uploaded_file is not None:
                 continue
 
             def cell(index):
-                if index is None or index >= len(row):
+
+                if (
+                    index is None
+                    or index >= len(row)
+                ):
                     return ""
+
                 return row[index].strip()
 
             raw_nr = cell(idx_nr)
@@ -748,7 +1135,7 @@ if uploaded_file is not None:
                 continue
 
             nr_match = re.match(
-                r"^\\s*(\\d+)",
+                r"^\s*(\d+)",
                 raw_nr,
             )
 
@@ -766,34 +1153,54 @@ if uploaded_file is not None:
             art = cell(idx_art)
             ort = cell(idx_ort)
 
-            kfz = re.sub(
-                r"\\(.*?\\)",
+            kfz_clean = re.sub(
+                r"\(.*?\)",
                 "",
                 raw_kfz,
             ).strip()
 
-            if not kfz:
-                kfz = (
-                    "OHNE"
-                    if "ohne" in raw_kfz.lower()
-                    else "-"
+            if not kfz_clean:
+
+                if "ohne" in raw_kfz.lower():
+                    kfz_clean = "OHNE"
+                else:
+                    kfz_clean = "-"
+
+            parsed = parse_dt(annahme)
+
+            if parsed:
+
+                datum = parsed.strftime(
+                    "%d.%m.%Y"
                 )
 
-            dt = parse_dt(annahme)
+                zeit = parsed.strftime(
+                    "%H:%M"
+                )
 
-            if dt:
-                datum = dt.strftime("%d.%m.%Y")
-                zeit = dt.strftime("%H:%M")
             else:
-                datum = annahme.split(" ")[0] if annahme else ""
+
+                datum = annahme
                 zeit = ""
 
-            tarif, betrag = match_tariff_rule(
-                stat,
-                ag,
-                art,
-                raw_nr,
-                ort,
+                if " " in annahme:
+
+                    parts = annahme.split(
+                        " ",
+                        1,
+                    )
+
+                    datum = parts[0]
+                    zeit = parts[1][:5]
+
+            tarif, betrag = (
+                match_tariff_rule(
+                    stat,
+                    ag,
+                    art,
+                    raw_nr,
+                    ort,
+                )
             )
 
             bemerkung = (
@@ -803,7 +1210,7 @@ if uploaded_file is not None:
             )
 
             if fahrer:
-                drivers.add(fahrer)
+                found_drivers.add(fahrer)
 
             new_orders[nr] = {
                 "nr": nr,
@@ -811,7 +1218,7 @@ if uploaded_file is not None:
                 "stat": stat,
                 "datum": datum,
                 "zeit": zeit,
-                "kfz": kfz,
+                "kfz": kfz_clean,
                 "ag": ag,
                 "art": art,
                 "tarif": tarif,
@@ -822,68 +1229,71 @@ if uploaded_file is not None:
 
         st.session_state.orders = new_orders
 
-        # Neue Datei = neuer Arbeitsstand
+        st.session_state.detected_drivers = sorted(
+            list(found_drivers)
+        )
+
+        # Bei neuer CSV Status neu aufbauen.
         st.session_state.tour_status = {
             nr: STATUS_OPEN
             for nr in new_orders
         }
 
-        st.session_state.detected_drivers = sorted(
-            drivers
-        )
-
         st.session_state.file_hash = current_hash
+
+        st.session_state.auto_initialized = ""
 
         st.rerun()
 
 
+# ============================================================
+# OHNE CSV STOPPEN
+# ============================================================
+
 if not st.session_state.orders:
 
     st.info(
-        "👆 Lade zuerst die OnStreet-CSV hoch. "
-        "Danach erscheinen Fahrer und Touren automatisch."
+        "👆 Lade zuerst deine OnStreet-CSV hoch."
     )
 
     st.stop()
 
 
-st.success(
-    f"✓ CSV geladen · "
-    f"{len(st.session_state.orders)} Touren · "
-    f"{len(st.session_state.detected_drivers)} Fahrer"
-)
-
-
 # ============================================================
-# 2 FAHRER
+# FAHRER
 # ============================================================
 
-st.markdown(
-    '<div class="cv-section">2 · Fahrer auswählen</div>',
-    unsafe_allow_html=True,
+top1, top2 = st.columns(
+    [1.2, 2.2]
 )
 
-driver_options = (
-    ["Alle Fahrer"]
-    + st.session_state.detected_drivers
-)
+with top1:
 
-default_driver = 0
+    driver_options = (
+        ["Alle Fahrer"]
+        + st.session_state.detected_drivers
+    )
 
-for i, driver in enumerate(driver_options):
+    default_idx = 0
 
-    d = driver.lower()
+    for index, driver in enumerate(
+        driver_options
+    ):
 
-    if "ross" in d or "can" in d:
-        default_driver = i
-        break
+        driver_lower = driver.lower()
 
+        if (
+            "ross" in driver_lower
+            or "can" in driver_lower
+        ):
+            default_idx = index
+            break
 
-active_driver = st.selectbox(
-    "Fahrer",
-    driver_options,
-    index=default_driver,
-)
+    active_driver = st.selectbox(
+        "👤 Fahrer",
+        driver_options,
+        index=default_idx,
+    )
 
 
 def belongs_to_driver(order):
@@ -893,219 +1303,327 @@ def belongs_to_driver(order):
 
     return (
         active_driver.lower()
-        in order["fahrer"].lower()
+        in order.get(
+            "fahrer",
+            "",
+        ).lower()
     )
 
 
-driver_orders = [
-    order
-    for order in st.session_state.orders.values()
+driver_orders = {
+    nr: order
+    for nr, order
+    in st.session_state.orders.items()
     if belongs_to_driver(order)
-]
+}
 
 
 # ============================================================
-# 3 SCHICHT
+# BEREITSCHAFTEN FINDEN
 # ============================================================
 
-st.markdown(
-    '<div class="cv-section">3 · Schicht auswählen</div>',
-    unsafe_allow_html=True,
+available_shifts = get_available_shifts(
+    driver_orders
 )
 
 
-available_dates = sorted({
-    dt.date()
-    for order in driver_orders
-    if (dt := order_datetime(order))
-})
-
-
-if not available_dates:
+if not available_shifts:
 
     st.warning(
-        "Für diesen Fahrer wurden keine gültigen "
-        "Datumsangaben gefunden."
+        "Für diesen Fahrer wurden keine "
+        "gültigen Datumsangaben gefunden."
     )
 
     st.stop()
 
 
-# WICHTIG:
-# nicht mehr erster Tag + 2,
-# sondern echter Bereich der CSV
-min_date = min(available_dates)
-max_date = max(available_dates)
+with top2:
+
+    selected_shift_label = st.selectbox(
+        "📅 Bereitschaft",
+        [
+            shift_label(shift)
+            for shift in available_shifts
+        ],
+    )
 
 
-selected_range = st.date_input(
-    "Zeitraum",
-    value=(min_date, max_date),
-    min_value=min_date,
-    max_value=max_date,
+selected_shift_index = [
+    shift_label(shift)
+    for shift in available_shifts
+].index(
+    selected_shift_label
+)
+
+
+shift_start, shift_end = (
+    available_shifts[
+        selected_shift_index
+    ]
+)
+
+
+# ============================================================
+# AUTOMATISCHE PROVISIONIERUNG
+# ============================================================
+
+auto_key = (
+    f"{st.session_state.file_hash}"
+    f"|{active_driver}"
+    f"|{shift_start.isoformat()}"
 )
 
 
 if (
-    isinstance(selected_range, tuple)
-    and len(selected_range) == 2
+    st.session_state.auto_initialized
+    != auto_key
 ):
 
-    start_date, end_date = selected_range
+    # Zuerst alle Touren des aktuell ausgewählten
+    # Fahrers wieder neutral behandeln.
+    #
+    # Wichtig:
+    # Nur automatische Initialisierung.
+    # Danach bleiben manuelle Änderungen erhalten.
 
-else:
+    for nr, order in driver_orders.items():
 
-    start_date = selected_range
-    end_date = selected_range
+        if is_storno_order(order):
 
+            set_status(
+                nr,
+                STATUS_STORNO,
+            )
 
-def in_selected_shift(order):
+            continue
 
-    dt = order_datetime(order)
+        if is_in_standby(
+            order,
+            shift_start,
+            shift_end,
+        ):
 
-    if not dt:
-        return False
+            # Fehlfahrten / Leerfahrten werden
+            # ausdrücklich NICHT ausgeschlossen.
+            set_status(
+                nr,
+                STATUS_PROVI,
+            )
 
-    return (
-        start_date
-        <= dt.date()
-        <= end_date
+        else:
+
+            set_status(
+                nr,
+                STATUS_OPEN,
+            )
+
+    st.session_state.auto_initialized = (
+        auto_key
     )
 
-
-visible_orders = [
-    order
-    for order in driver_orders
-    if in_selected_shift(order)
-]
+    st.rerun()
 
 
-st.caption(
-    f"{start_date.strftime('%d.%m.%Y')} – "
-    f"{end_date.strftime('%d.%m.%Y')} · "
-    f"{len(visible_orders)} Touren"
+# ============================================================
+# BEREITSCHAFT INFO
+# ============================================================
+
+automatic_count = sum(
+    1
+    for nr, order in driver_orders.items()
+    if (
+        is_in_standby(
+            order,
+            shift_start,
+            shift_end,
+        )
+        and get_status(nr)
+        == STATUS_PROVI
+    )
 )
 
 
-# ============================================================
-# 4 TOUREN
-# ============================================================
-
 st.markdown(
-    '<div class="cv-section">4 · Touren</div>',
+    f"""
+<div class="cv-shift">
+<b>✓ Bereitschaft erkannt</b><br>
+Freitag {shift_start.strftime('%d.%m.%Y')} · 21:00 Uhr
+&nbsp;→&nbsp;
+Sonntag {shift_end.strftime('%d.%m.%Y')} · 21:00 Uhr<br>
+<b>{automatic_count} Aufträge aktuell provisioniert</b>
+</div>
+""",
     unsafe_allow_html=True,
 )
 
 
-search = st.text_input(
+# ============================================================
+# SUCHE
+# ============================================================
+
+search_input = st.text_input(
     "🔎 Auftrag oder Kennzeichen suchen",
     placeholder="z. B. 26945 oder BN-AB 123",
 )
 
 
-if search:
+def matches_search(order):
 
-    q = search.lower().strip()
+    if not search_input:
+        return True
 
-    visible_orders = [
-        o
-        for o in visible_orders
-        if (
-            q in o["nr"].lower()
-            or q in o["kfz"].lower()
-        )
-    ]
+    query = search_input.strip().lower()
 
-
-open_count = sum(
-    1
-    for o in visible_orders
-    if status_of(o["nr"])
-    in [STATUS_OPEN, STATUS_REMOVED]
-)
-
-
-c1, c2 = st.columns([2, 1])
-
-with c1:
-
-    st.write(
-        f"**{len(visible_orders)} Touren sichtbar · "
-        f"{open_count} noch nicht übernommen**"
+    return (
+        query in order["nr"].lower()
+        or query in order["kfz"].lower()
+        or query in order["ag"].lower()
     )
 
 
-with c2:
+# ============================================================
+# LISTEN
+# ============================================================
 
-    if st.button(
-        "✓ Alle sichtbaren übernehmen",
-        type="primary",
-        use_container_width=True,
-        disabled=(open_count == 0),
-    ):
+all_orders = [
+    order
+    for order in driver_orders.values()
+    if matches_search(order)
+]
 
-        for order in visible_orders:
 
-            nr = order["nr"]
+all_orders.sort(
+    key=lambda order:
+        order_datetime(order)
+        or datetime.min
+)
 
-            if status_of(nr) in [
-                STATUS_OPEN,
-                STATUS_REMOVED,
-            ]:
-                set_status(
-                    nr,
-                    STATUS_DONE,
-                )
 
-        st.rerun()
+provi_orders = [
+    order
+    for order in driver_orders.values()
+    if (
+        get_status(order["nr"])
+        == STATUS_PROVI
+        and matches_search(order)
+    )
+]
+
+
+provi_orders.sort(
+    key=lambda order:
+        order_datetime(order)
+        or datetime.min
+)
 
 
 # ============================================================
-# MOBILE TOURENKARTEN
+# KENNZAHLEN
 # ============================================================
 
-for order in sorted(
-    visible_orders,
-    key=lambda x: order_datetime(x) or datetime.min,
-):
+all_provi_orders = [
+    order
+    for order in driver_orders.values()
+    if get_status(order["nr"])
+    == STATUS_PROVI
+]
 
-    nr = order["nr"]
-    status = status_of(nr)
 
-    if status == STATUS_DONE:
-        label = "✓ ÜBERNOMMEN"
-        css = "cv-done"
+total_brutto = sum(
+    float(order["betrag"])
+    for order in all_provi_orders
+)
 
-    elif status == STATUS_CANCELLED:
-        label = "✕ STORNIERT"
-        css = "cv-storno"
 
-    elif status == STATUS_REMOVED:
-        label = "↩ ENTFERNT"
-        css = "cv-open"
+total_netto = (
+    total_brutto * 0.60
+)
 
-    else:
-        label = "● OFFEN"
-        css = "cv-open"
 
-    st.markdown(
-        f"""
-<div class="cv-card">
+m1, m2, m3 = st.columns(3)
 
+m1.metric(
+    "📋 Provisionierte Touren",
+    len(all_provi_orders),
+)
+
+m2.metric(
+    "💰 Brutto-Provision",
+    money(total_brutto),
+)
+
+m3.metric(
+    "💵 Ca. Netto (~60 %)",
+    money(total_netto),
+)
+
+
+st.markdown("---")
+
+
+# ============================================================
+# 2-SPALTEN-LAYOUT
+# ============================================================
+
+col_all, col_provi = st.columns(
+    [1, 1],
+    gap="large",
+)
+
+
+# ============================================================
+# LINKS: ALLE AUFTRÄGE
+# ============================================================
+
+with col_all:
+
+    st.subheader(
+        f"📥 Alle Aufträge ({len(all_orders)})"
+    )
+
+    st.caption(
+        "Alle Aufträge des ausgewählten Fahrers. "
+        "Aufträge außerhalb der Bereitschaft können "
+        "manuell übernommen werden."
+    )
+
+    if not all_orders:
+
+        st.info(
+            "Keine passenden Aufträge gefunden."
+        )
+
+    for order in all_orders:
+
+        nr = order["nr"]
+
+        status = get_status(nr)
+
+        dt = order_datetime(order)
+
+        inside_shift = (
+            is_in_standby(
+                order,
+                shift_start,
+                shift_end,
+            )
+        )
+
+        card_class = "cv-card"
+
+        if status == STATUS_STORNO:
+            card_class += " cv-card-storno"
+
+        st.markdown(
+            f"""
+<div class="{card_class}">
 <div class="cv-card-top">
-
-<span class="cv-status {css}">
-{label}
-</span>
-
-<span class="cv-price">
-{money(order["betrag"])}
-</span>
-
-</div>
-
 <div class="cv-order">
-Auftrag #{html.escape(order["nr"])}
+#{html.escape(order["nr"])}
+</div>
+<div class="cv-price">
+{money(order["betrag"])}
+</div>
 </div>
 
 <div class="cv-meta">
@@ -1122,35 +1640,127 @@ Auftrag #{html.escape(order["nr"])}
 {html.escape(order["tarif"])}
 </div>
 
+{
+    '<span class="cv-auto">BEREITSCHAFT</span>'
+    if inside_shift and status != STATUS_STORNO
+    else ''
+}
+
+{
+    '<span class="cv-storno-label">STORNO · 0 €</span>'
+    if status == STATUS_STORNO
+    else ''
+}
+
 </div>
 """,
-        unsafe_allow_html=True,
-    )
+            unsafe_allow_html=True,
+        )
 
-    if status in [
-        STATUS_OPEN,
-        STATUS_REMOVED,
-    ]:
+        if status == STATUS_STORNO:
 
-        if st.button(
-            "✓ Übernehmen",
-            key=f"take_{nr}",
-            type="primary",
-            use_container_width=True,
-        ):
-            set_status(
-                nr,
-                STATUS_DONE,
+            st.caption(
+                "Dieser Auftrag wurde als Storno erkannt "
+                "und wird nicht provisioniert."
             )
 
-            st.rerun()
+        elif status == STATUS_PROVI:
+
+            st.success(
+                "✓ In Provisionsabrechnung"
+            )
+
+        else:
+
+            if st.button(
+                "＋ Übernehmen",
+                key=f"take_{nr}",
+                use_container_width=True,
+            ):
+
+                set_status(
+                    nr,
+                    STATUS_PROVI,
+                )
+
+                st.rerun()
 
 
-    elif status == STATUS_DONE:
+# ============================================================
+# RECHTS: PROVISIONSABRECHNUNG
+# ============================================================
 
-        b1, b2 = st.columns(2)
+with col_provi:
 
-        with b1:
+    st.subheader(
+        f"💰 Provisionsabrechnung "
+        f"({len(provi_orders)})"
+    )
+
+    st.caption(
+        "Bereitschaftstouren werden automatisch "
+        "hier eingetragen."
+    )
+
+    if not provi_orders:
+
+        st.info(
+            "Noch keine provisionierten Aufträge."
+        )
+
+    for order in provi_orders:
+
+        nr = order["nr"]
+
+        inside_shift = (
+            is_in_standby(
+                order,
+                shift_start,
+                shift_end,
+            )
+        )
+
+        st.markdown(
+            f"""
+<div class="cv-card cv-card-provi">
+
+<div class="cv-card-top">
+<div class="cv-order">
+✓ #{html.escape(order["nr"])}
+</div>
+<div class="cv-price">
+{money(order["betrag"])}
+</div>
+</div>
+
+<div class="cv-meta">
+{html.escape(format_date(order["datum"]))}
+ · {html.escape(order["zeit"])}
+ · {html.escape(order["kfz"])}
+</div>
+
+<div class="cv-meta">
+{html.escape(order["ag"])}
+</div>
+
+<div class="cv-tariff">
+{html.escape(order["tarif"])}
+</div>
+
+{
+    '<span class="cv-auto">AUTOMATISCHE BEREITSCHAFT</span>'
+    if inside_shift
+    else '<span class="cv-auto">MANUELL ÜBERNOMMEN</span>'
+}
+
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+
+        action1, action2 = st.columns(2)
+
+        with action1:
 
             if st.button(
                 "↩ Entfernen",
@@ -1165,202 +1775,251 @@ Auftrag #{html.escape(order["nr"])}
 
                 st.rerun()
 
-        with b2:
+        with action2:
 
             if st.button(
                 "🚫 Storno",
-                key=f"cancel_{nr}",
+                key=f"storno_{nr}",
                 use_container_width=True,
             ):
 
                 set_status(
                     nr,
-                    STATUS_CANCELLED,
+                    STATUS_STORNO,
                 )
 
                 st.rerun()
 
 
-    elif status == STATUS_CANCELLED:
-
-        if st.button(
-            "↩ Storno zurücknehmen",
-            key=f"undo_cancel_{nr}",
-            use_container_width=True,
-        ):
-
-            set_status(
-                nr,
-                STATUS_OPEN,
-            )
-
-            st.rerun()
-
-
 # ============================================================
-# ABRECHNUNG
+# MANUELLE KORREKTUREN
 # ============================================================
 
-st.markdown(
-    '<div class="cv-section">5 · Abrechnung</div>',
-    unsafe_allow_html=True,
-)
+st.markdown("---")
+
+st.subheader("✏️ Korrekturen")
 
 
-prov_list = [
-    order
-    for order in driver_orders
-    if status_of(order["nr"]) == STATUS_DONE
-]
+edit_col1, edit_col2 = st.columns(2)
 
 
-total_brutto = sum(
-    float(order["betrag"])
-    for order in prov_list
-)
+# ------------------------------------------------------------
+# STORNO ZURÜCKNEHMEN
+# ------------------------------------------------------------
 
-total_netto = total_brutto * 0.60
+with edit_col1:
 
-
-m1, m2, m3 = st.columns(3)
-
-m1.metric(
-    "Touren",
-    len(prov_list),
-)
-
-m2.metric(
-    "Brutto",
-    money(total_brutto),
-)
-
-m3.metric(
-    "Ca. Netto (~60 %)",
-    money(total_netto),
-)
-
-
-if not prov_list:
-
-    st.info(
-        "Noch keine Touren übernommen."
-    )
-
-else:
-
-    st.markdown("#### Übernommene Touren")
-
-    df = pd.DataFrame([
-        {
-            "Datum": format_date(o["datum"]),
-            "Auftrag": o["nr"],
-            "Kennzeichen": o["kfz"],
-            "Auftraggeber": o["ag"],
-            "Tarif": o["tarif"],
-            "Betrag": money(o["betrag"]),
-        }
-        for o in prov_list
-    ])
-
-    st.dataframe(
-        df,
-        use_container_width=True,
-        hide_index=True,
-    )
-
-
-# ============================================================
-# TARIF MANUELL ÄNDERN
-# ============================================================
-
-if prov_list:
+    storno_orders = [
+        order
+        for order in driver_orders.values()
+        if get_status(order["nr"])
+        == STATUS_STORNO
+    ]
 
     with st.expander(
-        "✏️ Tarif / Festpreis anpassen"
+        "🚫 Storno zurücknehmen"
     ):
 
-        target = st.selectbox(
-            "Tour",
-            [
-                f"{o['nr']} | {o['kfz']} | "
-                f"{money(o['betrag'])}"
-                for o in prov_list
-            ],
-        )
+        if not storno_orders:
 
-        tariff_options = (
-            [t[0] for t in TARIFFS]
-            + ["Freier Betrag..."]
-        )
-
-        tariff_choice = st.selectbox(
-            "Neuer Tarif",
-            tariff_options,
-        )
-
-        custom_amount = None
-
-        if tariff_choice == "Freier Betrag...":
-
-            custom_amount = st.number_input(
-                "Betrag in €",
-                min_value=0.0,
-                max_value=500.0,
-                value=25.0,
-                step=5.0,
+            st.caption(
+                "Keine stornierten Aufträge."
             )
 
+        else:
 
-        if st.button(
-            "💾 Tarif speichern",
-            use_container_width=True,
-        ):
+            undo_storno = st.selectbox(
+                "Storno-Auftrag",
+                [
+                    f"{o['nr']} | "
+                    f"{o['kfz']} | "
+                    f"{o['datum']}"
+                    for o in storno_orders
+                ],
+                key="undo_storno_select",
+            )
 
-            target_nr = target.split(" | ")[0]
+            if st.button(
+                "Storno zurücknehmen",
+                key="undo_storno_button",
+                use_container_width=True,
+            ):
 
-            order = st.session_state.orders[
-                target_nr
-            ]
-
-            if tariff_choice == "Freier Betrag...":
-
-                order["betrag"] = float(
-                    custom_amount
+                target_nr = (
+                    undo_storno
+                    .split(" | ")[0]
                 )
 
-                order["tarif"] = (
-                    f"Manuell "
-                    f"({money(custom_amount)})"
+                order = (
+                    st.session_state
+                    .orders[target_nr]
                 )
 
-            else:
+                if is_in_standby(
+                    order,
+                    shift_start,
+                    shift_end,
+                ):
 
-                for label, short, amount in TARIFFS:
+                    set_status(
+                        target_nr,
+                        STATUS_PROVI,
+                    )
 
-                    if label == tariff_choice:
+                else:
 
-                        order["betrag"] = amount
-                        order["tarif"] = short
-                        break
+                    set_status(
+                        target_nr,
+                        STATUS_OPEN,
+                    )
 
-            order["bemerkung"] = (
-                f"{order['art']} / "
-                f"{order['tarif']}"
+                st.rerun()
+
+
+# ------------------------------------------------------------
+# TARIF ÄNDERN
+# ------------------------------------------------------------
+
+with edit_col2:
+
+    with st.expander(
+        "💶 Tarif / Festpreis ändern"
+    ):
+
+        if not all_provi_orders:
+
+            st.caption(
+                "Keine provisionierten Touren."
             )
 
-            st.success(
-                f"Tarif für Auftrag "
-                f"{target_nr} gespeichert."
+        else:
+
+            edit_target = st.selectbox(
+                "Auftrag",
+                [
+                    (
+                        f"{o['nr']} | "
+                        f"{o['kfz']} | "
+                        f"{money(o['betrag'])}"
+                    )
+                    for o in all_provi_orders
+                ],
+                key="tariff_target",
             )
 
-            st.rerun()
+            tariff_names = (
+                [t[0] for t in TARIFFS]
+                + ["Freier Betrag..."]
+            )
+
+            selected_tariff = st.selectbox(
+                "Neuer Tarif",
+                tariff_names,
+                key="tariff_select",
+            )
+
+            custom_amount = 25.0
+
+            if (
+                selected_tariff
+                == "Freier Betrag..."
+            ):
+
+                custom_amount = st.number_input(
+                    "Betrag in €",
+                    min_value=0.0,
+                    max_value=500.0,
+                    value=25.0,
+                    step=5.0,
+                )
+
+            if st.button(
+                "💾 Tarif speichern",
+                key="save_tariff",
+                use_container_width=True,
+            ):
+
+                target_nr = (
+                    edit_target
+                    .split(" | ")[0]
+                )
+
+                order = (
+                    st.session_state
+                    .orders[target_nr]
+                )
+
+                if (
+                    selected_tariff
+                    == "Freier Betrag..."
+                ):
+
+                    order["betrag"] = float(
+                        custom_amount
+                    )
+
+                    order["tarif"] = (
+                        f"Manuell "
+                        f"({money(custom_amount)})"
+                    )
+
+                else:
+
+                    for (
+                        tariff_label,
+                        tariff_short,
+                        tariff_value,
+                    ) in TARIFFS:
+
+                        if (
+                            tariff_label
+                            == selected_tariff
+                        ):
+
+                            order["betrag"] = (
+                                tariff_value
+                            )
+
+                            order["tarif"] = (
+                                tariff_short
+                            )
+
+                            break
+
+                order["bemerkung"] = (
+                    f"{order['art']} / "
+                    f"{order['tarif']}"
+                )
+
+                st.success(
+                    f"Tarif für Auftrag "
+                    f"{target_nr} gespeichert."
+                )
+
+                st.rerun()
 
 
 # ============================================================
-# WHATSAPP
+# EXPORT
 # ============================================================
 
-st.markdown("#### 📋 WhatsApp")
+st.markdown("---")
+
+st.subheader("📤 Abrechnung & Export")
+
+
+export_orders = sorted(
+    all_provi_orders,
+    key=lambda order:
+        order_datetime(order)
+        or datetime.min,
+)
+
+
+export_total = sum(
+    float(order["betrag"])
+    for order in export_orders
+)
 
 
 driver_title = (
@@ -1370,68 +2029,91 @@ driver_title = (
 )
 
 
+period_string = (
+    f"{shift_start.strftime('%d.%m.%Y')} "
+    f"21:00 – "
+    f"{shift_end.strftime('%d.%m.%Y')} "
+    f"21:00"
+)
+
+
+# ============================================================
+# WHATSAPP
+# ============================================================
+
 wa_lines = [
-    f"📋 *Bereitschafts-Abrechnung – {driver_title}*",
+    (
+        f"📋 *Bereitschafts-Abrechnung – "
+        f"{driver_title}*"
+    ),
+    (
+        f"🕘 {period_string}"
+    ),
     "",
     (
         f"💰 *Gesamt:* "
-        f"{len(prov_list)} Touren = "
-        f"*{money(total_brutto)}*"
+        f"{len(export_orders)} Touren = "
+        f"*{money(export_total)}*"
     ),
     "",
 ]
 
 
-for order in prov_list:
+for order in export_orders:
 
     wa_lines.append(
-        f"• *{order['nr']}* | "
-        f"{order['datum']} | "
-        f"{order['kfz']} | "
-        f"{order['bemerkung']} "
-        f"({money(order['betrag'])})"
+        (
+            f"• *{order['nr']}* | "
+            f"{order['datum']} | "
+            f"{order['kfz']} | "
+            f"{order['bemerkung']} "
+            f"({money(order['betrag'])})"
+        )
     )
 
 
-wa_text = "\n".join(wa_lines)
-
-
-st.text_area(
-    "Text kopieren",
-    value=wa_text,
-    height=150,
+wa_text = "\n".join(
+    wa_lines
 )
 
 
+export_col1, export_col2 = st.columns(
+    [1.3, 1]
+)
+
+
+with export_col1:
+
+    st.text_area(
+        "📋 WhatsApp-Text",
+        value=wa_text,
+        height=180,
+    )
+
+
 # ============================================================
-# EXPORT
+# PDF + CSV
 # ============================================================
 
-st.markdown("#### 📤 Export")
+with export_col2:
 
-
-exp1, exp2 = st.columns(2)
-
-
-with exp1:
-
-    if HAS_REPORTLAB and prov_list:
+    if (
+        HAS_REPORTLAB
+        and export_orders
+    ):
 
         pdf_bytes = generate_pdf_bytes(
-            prov_list,
+            export_orders,
             driver_title,
-            (
-                f"{start_date.strftime('%d.%m.%Y')} – "
-                f"{end_date.strftime('%d.%m.%Y')}"
-            ),
+            period_string,
         )
 
         st.download_button(
-            "📄 PDF herunterladen",
+            label="📄 PDF herunterladen",
             data=pdf_bytes,
             file_name=(
                 "Abrechnung_"
-                f"{datetime.now().strftime('%Y-%m-%d')}"
+                f"{shift_start.strftime('%Y-%m-%d')}"
                 ".pdf"
             ),
             mime="application/pdf",
@@ -1441,16 +2123,14 @@ with exp1:
     elif not HAS_REPORTLAB:
 
         st.warning(
-            "PDF-Modul ReportLab ist nicht installiert."
+            "ReportLab fehlt. "
+            "PDF-Export ist nicht verfügbar."
         )
 
-
-with exp2:
-
-    csv_buffer = io.StringIO()
+    csv_buf = io.StringIO()
 
     writer = csv.writer(
-        csv_buffer,
+        csv_buf,
         delimiter=";",
     )
 
@@ -1463,7 +2143,7 @@ with exp2:
         "BETRAG",
     ])
 
-    for order in prov_list:
+    for order in export_orders:
 
         writer.writerow([
             order["datum"],
@@ -1480,44 +2160,56 @@ with exp2:
         "",
         "",
         "SUMME:",
-        f"{total_brutto:.2f}",
+        f"{export_total:.2f}",
     ])
 
     st.download_button(
-        "💾 CSV exportieren",
-        data=csv_buffer.getvalue().encode(
+        label="💾 CSV exportieren",
+        data=csv_buf.getvalue().encode(
             "utf-8-sig"
         ),
-        file_name="Abrechnung.csv",
+        file_name=(
+            "Abrechnung_"
+            f"{shift_start.strftime('%Y-%m-%d')}"
+            ".csv"
+        ),
         mime="text/csv",
         use_container_width=True,
-        disabled=(len(prov_list) == 0),
+        disabled=(
+            len(export_orders) == 0
+        ),
     )
 
 
 # ============================================================
-# DEBUG / INFO
+# INFO
 # ============================================================
 
 with st.expander(
-    "ℹ️ Hinweise zur Tarifberechnung",
-    expanded=False,
+    "ℹ️ Regeln dieser Abrechnung"
 ):
 
-    st.write(
+    st.markdown(
         """
-**ADAC Festpreisgebiete**
+**Automatische Bereitschaft**
 
-🟢 FP1 = 25,00 €
+Freitag **21:00 Uhr** bis Sonntag **21:00 Uhr**.
 
-🟡 FP2 = 30,00 €
+Alle Aufträge des ausgewählten Fahrers innerhalb dieses
+Zeitraums werden automatisch in die Provisionsabrechnung
+übernommen.
 
+**Fehlfahrten und Leerfahrten werden provisioniert.**
+
+**Storno wird nicht provisioniert und mit 0 € behandelt.**
+
+Aufträge außerhalb der Bereitschaft können links manuell
+übernommen werden.
+
+**ADAC Festpreis**
+
+🟢 FP1 = 25,00 €  
+🟡 FP2 = 30,00 €  
 🟣 FP3 = 35,00 €
-
-Die Zuordnung erfolgt anhand des Einsatzortes bzw.
-der Postleitzahl aus der OnStreet-CSV.
-
-Der Tarif kann bei Bedarf bei einer übernommenen
-Tour manuell korrigiert werden.
 """
     )
