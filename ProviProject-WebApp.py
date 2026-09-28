@@ -16,7 +16,7 @@ try:
 except ImportError:
     HAS_REPORTLAB = False
 
-# Mobile Page Config
+# Mobile & Desktop Page Config
 st.set_page_config(
     page_title="Cuvenhaus Provision",
     page_icon="🚜",
@@ -200,9 +200,9 @@ if "file_hash" not in st.session_state:
 st.title("🚜 Cuvenhaus Provisions-Manager")
 
 # 1. Datei-Upload immer zuerst anzeigen
-uploaded_file = st.file_uploader("📂 1. OnStreet CSV vom Handy oder PC auswählen", type=["csv"])
+uploaded_file = st.file_uploader("📂 1. OnStreet CSV auswählen", type=["csv"])
 
-# CSV verarbeiten, wenn eine neue Datei gewählt wurde
+# CSV verarbeiten
 if uploaded_file is not None:
     current_hash = f"{uploaded_file.name}_{uploaded_file.size}"
     if st.session_state.file_hash != current_hash:
@@ -271,35 +271,50 @@ if uploaded_file is not None:
             st.session_state.file_hash = current_hash
             st.rerun()
 
-# Wenn noch keine Datei da ist: Freundlicher Hinweis
+# Hinweis wenn noch keine Datei da ist
 if not st.session_state.pool_orders and not st.session_state.prov_orders:
-    st.info("👆 Bitte wähle oben deine OnStreet-CSV aus. Anschließend erscheinen automatisch die Fahrer aus der Datei.")
+    st.info("👆 Bitte wähle oben deine OnStreet-CSV aus. Anschließend erscheinen automatisch die Touren und Fahrer.")
     st.stop()
 
-# 2. Fahrer-Auswahl dynamisch aus der CSV
-col_drv, col_info = st.columns([1, 2])
+# 2. Obere Leiste: Fahrer-Wahl & Schnellsuche nach Auftragsnummer oder Kennzeichen
+top_c1, top_c2, top_c3 = st.columns([1.5, 2.5, 1])
 
-with col_drv:
+with top_c1:
     driver_options = ["Alle Fahrer"] + st.session_state.detected_drivers
-    
-    # Can-Erik automatisch als Standard vorauswählen, falls im Export vorhanden
     default_idx = 0
     for idx, d in enumerate(driver_options):
         if "ross" in d.lower() or "can" in d.lower():
             default_idx = idx
             break
-            
     active_driver = st.selectbox("👤 Fahrer filtern", driver_options, index=default_idx)
 
-with col_info:
-    st.success(f"✅ {len(st.session_state.pool_orders) + len(st.session_state.prov_orders)} Touren geladen | Erkannte Fahrer: {len(st.session_state.detected_drivers)}")
+with top_c2:
+    search_input = st.text_input("🔍 Auftrag nach Nummer oder Kennzeichen suchen:", placeholder="z. B. 26905 oder BN-QS77")
 
-# Filter & Aktions-Buttons
+with top_c3:
+    st.write("")
+    st.write("")
+    if st.button("➕ Übernehmen", use_container_width=True) and search_input:
+        q = search_input.strip().lower()
+        matched_nr = None
+        for nr, o in st.session_state.pool_orders.items():
+            if q in nr.lower() or q in o["kfz"].lower():
+                matched_nr = nr
+                break
+        if matched_nr:
+            st.session_state.prov_orders[matched_nr] = st.session_state.pool_orders.pop(matched_nr)
+            st.success(f"Tour {matched_nr} übernommen!")
+            st.rerun()
+        elif any(q in k.lower() or q in v["kfz"].lower() for k, v in st.session_state.prov_orders.items()):
+            st.info("Auftrag ist bereits in deiner Abrechnung.")
+        else:
+            st.warning("Kein passender Auftrag im Pool gefunden.")
+
+# Schicht-Filter Leiste
 st.markdown("---")
 c_date, c_act1, c_act2 = st.columns([2, 1, 1])
 
 with c_date:
-    # Sucht das erste Datum aus der Liste als Standard
     default_d = date.today()
     for o in list(st.session_state.pool_orders.values()) + list(st.session_state.prov_orders.values()):
         dt = parse_dt(o["datum"])
@@ -326,7 +341,6 @@ with c_act1:
                     continue
                 dt = parse_dt(f"{o['datum']} {o['zeit']}")
                 if dt and (start_d <= dt.date() <= end_d):
-                    # Freitag ab 21h bis Sonntag 21h Check
                     w = dt.weekday()
                     if w == 4 and dt.hour < 21:
                         continue
@@ -350,6 +364,7 @@ with c_act2:
 # Kennzahlen
 f_name = active_driver.lower() if active_driver != "Alle Fahrer" else ""
 prov_list = [o for o in st.session_state.prov_orders.values() if not f_name or f_name in o["fahrer"].lower()]
+pool_list = [o for o in st.session_state.pool_orders.values() if not f_name or f_name in o["fahrer"].lower()]
 
 total_brutto = sum(float(o["betrag"]) for o in prov_list)
 total_netto = total_brutto * 0.60
@@ -359,49 +374,82 @@ m1.metric("📋 Touren auf Zettel", f"{len(prov_list)}")
 m2.metric("💰 Brutto-Provision", f"{total_brutto:,.2f} €".replace(",", "X").replace(".", ",").replace("X", "."))
 m3.metric("💵 Ca. Netto (~60%)", f"{total_netto:,.2f} €".replace(",", "X").replace(".", ",").replace("X", "."))
 
-# Tabs für Mobilansicht
-tab_zettel, tab_pool = st.tabs(["💰 1. Cuvenhaus Abrechnungszettel", "📥 2. OnStreet Pool"])
+st.markdown("---")
 
-with tab_zettel:
+# ==========================================
+# 2-SPALTEN-LAYOUT WIE IN DER DESKTOP-APP
+# ==========================================
+col_pool, col_zettel = st.columns([1, 1], gap="medium")
+
+# LINKE SPALTE: ONSTREET POOL
+with col_pool:
+    st.subheader("📥 1. OnStreet Pool (Offene Touren)")
+    
+    if pool_list:
+        # Einzelne Tour per Dropdown nach rechts schieben
+        quick_add = st.selectbox(
+            "➕ Tour in Abrechnung schieben:",
+            ["- Wählen -"] + [f"{o['nr']} | {o['kfz']} | {o['ag']} ({o['datum']})" for o in pool_list],
+            key="sb_add_pool"
+        )
+        if quick_add != "- Wählen -":
+            target_nr = quick_add.split(" | ")[0]
+            st.session_state.prov_orders[target_nr] = st.session_state.pool_orders.pop(target_nr)
+            st.rerun()
+
+        df_pool = pd.DataFrame([{
+            "Auftrag": o["nr"],
+            "Datum": format_date_with_weekday(o["datum"]),
+            "Zeit": o["zeit"],
+            "Kennzeichen": o["kfz"],
+            "Kunde": o["ag"],
+            "Status": o["stat"]
+        } for o in pool_list])
+        st.dataframe(df_pool, use_container_width=True, hide_index=True, height=450)
+    else:
+        st.info("Alle offenen Fahrten übernommen oder Pool ist leer.")
+
+# RECHTE SPALTE: ABRECHNUNGSZETTEL
+with col_zettel:
+    st.subheader("💰 2. Deine Abrechnung (Cuvenhaus-Zettel)")
+    
     if prov_list:
+        # Aktionen für rechte Spalte
+        act_c1, act_c2 = st.columns(2)
+        with act_c1:
+            quick_rem = st.selectbox(
+                "↩️ Zurück in den Pool:",
+                ["- Wählen -"] + [f"{o['nr']} | {o['kfz']} ({float(o['betrag']):.2f} €)" for o in prov_list],
+                key="sb_rem_prov"
+            )
+            if quick_rem != "- Wählen -":
+                target_nr = quick_rem.split(" | ")[0]
+                st.session_state.pool_orders[target_nr] = st.session_state.prov_orders.pop(target_nr)
+                st.rerun()
+
+        with act_c2:
+            storno_sel = st.selectbox(
+                "🚫 Als Storno markieren (0 €):",
+                ["- Wählen -"] + [f"{o['nr']} | {o['kfz']}" for o in prov_list if o["betrag"] > 0],
+                key="sb_storno"
+            )
+            if storno_sel != "- Wählen -":
+                target_nr = storno_sel.split(" | ")[0]
+                st.session_state.prov_orders[target_nr]["betrag"] = 0.0
+                st.session_state.prov_orders[target_nr]["bemerkung"] = "Storno (0 €)"
+                st.rerun()
+
         df_zettel = pd.DataFrame([{
             "Datum": format_date_with_weekday(o["datum"]),
             "Auftrag": o["nr"],
-            "Fahrer": o["fahrer"],
             "Kennzeichen": o["kfz"],
             "Auftraggeber": o["ag"],
             "Bemerkung": o["bemerkung"],
             "Betrag": f"{float(o['betrag']):.2f} €"
         } for o in prov_list])
-        st.dataframe(df_zettel, use_container_width=True, hide_index=True)
-
-        remove_nr = st.selectbox("Tour zurück in den Pool schieben:", ["-"] + [o["nr"] for o in prov_list])
-        if remove_nr != "-":
-            st.session_state.pool_orders[remove_nr] = st.session_state.prov_orders.pop(remove_nr)
-            st.rerun()
+        st.dataframe(df_zettel, use_container_width=True, hide_index=True, height=450)
     else:
         st.info("Noch keine Touren auf dem Abrechnungszettel.")
-
-with tab_pool:
-    pool_list = [o for o in st.session_state.pool_orders.values() if not f_name or f_name in o["fahrer"].lower()]
-    if pool_list:
-        df_pool = pd.DataFrame([{
-            "Auftrag": o["nr"],
-            "Datum": format_date_with_weekday(o["datum"]),
-            "Zeit": o["zeit"],
-            "Fahrer": o["fahrer"],
-            "Fahrzeug": o["kfz"],
-            "Auftraggeber": o["ag"],
-            "Status": o["stat"]
-        } for o in pool_list])
-        st.dataframe(df_pool, use_container_width=True, hide_index=True)
-
-        add_nr = st.selectbox("Einzelnen Auftrag zur Abrechnung hinzufügen:", ["-"] + [o["nr"] for o in pool_list])
-        if add_nr != "-":
-            st.session_state.prov_orders[add_nr] = st.session_state.pool_orders.pop(add_nr)
-            st.rerun()
-    else:
-        st.info("Pool ist leer.")
 
 # Export-Bereich
 st.markdown("---")
