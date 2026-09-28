@@ -1,6 +1,5 @@
 import csv
 from datetime import datetime, date, timedelta
-import html
 import io
 import os
 import re
@@ -11,7 +10,7 @@ import pandas as pd
 try:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4, landscape
-    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.styles import getSampleStyleSheet
     from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
     HAS_REPORTLAB = True
 except ImportError:
@@ -93,7 +92,7 @@ def detect_adac_zone(einsatzort_str):
     if "bonn" in text and not any(b in text for b in ["beuel", "geislar", "pützchen", "holzlar", "oberkassel", "vilich", "mehlem", "53225", "53227", "53229", "53179"]):
         return "FP 2", 30.00
 
-    # 3. Grüne Zone (FP 1 - 25 €) inkl. Petersberg
+    # 3. Grüne Zone (FP 1 - 25 €) inkl. Petersberg & Königswinter Tal
     return "FP 1", 25.00
 
 def match_tariff_rule(stat, ag, art, nr, ort):
@@ -192,112 +191,158 @@ if "pool_orders" not in st.session_state:
     st.session_state.pool_orders = {}
 if "prov_orders" not in st.session_state:
     st.session_state.prov_orders = {}
+if "detected_drivers" not in st.session_state:
+    st.session_state.detected_drivers = []
+if "file_hash" not in st.session_state:
+    st.session_state.file_hash = ""
 
 # Header
 st.title("🚜 Cuvenhaus Provisions-Manager")
 
-# 1. Datei-Upload & Fahrer-Wahl
-col_up, col_drv = st.columns([2, 1])
+# 1. Datei-Upload immer zuerst anzeigen
+uploaded_file = st.file_uploader("📂 1. OnStreet CSV vom Handy oder PC auswählen", type=["csv"])
 
-with col_up:
-    uploaded_file = st.file_uploader("📂 OnStreet CSV vom Handy wählen", type=["csv"])
+# CSV verarbeiten, wenn eine neue Datei gewählt wurde
+if uploaded_file is not None:
+    current_hash = f"{uploaded_file.name}_{uploaded_file.size}"
+    if st.session_state.file_hash != current_hash:
+        content = uploaded_file.getvalue().decode("utf-8-sig", errors="ignore")
+        lines = [l for l in content.splitlines() if l.strip()]
+        if len(lines) >= 2:
+            delimiter = ";" if lines[0].count(";") > lines[0].count(",") else ","
+            reader = csv.reader(lines, delimiter=delimiter)
+            rows = list(reader)
+            headers = [h.strip().lower() for h in rows[0]]
+
+            def get_idx(cands):
+                for i, h in enumerate(headers):
+                    if any(c in h for c in cands):
+                        return i
+                return None
+
+            idx_stat = get_idx(["aktueller status", "status"])
+            idx_nr = get_idx(["auftrag", "vorgang"])
+            idx_fahrer = get_idx(["fahrer", "mitarbeiter"])
+            idx_annahme = get_idx(["annahme", "datum"])
+            idx_kfz = get_idx(["kennzeichen", "kfz"])
+            idx_fahrzeug = get_idx(["fahrzeug", "typ"])
+            idx_ag = get_idx(["auftraggeber", "kunde"])
+            idx_art = get_idx(["auftragsart", "leistung"])
+            idx_ort = get_idx(["einsatzort", "ort", "straße"])
+
+            st.session_state.pool_orders.clear()
+            st.session_state.prov_orders.clear()
+            found_drivers = set()
+
+            for r in rows[1:]:
+                if not any(r): continue
+                nr = r[idx_nr].strip() if idx_nr is not None and idx_nr < len(r) else ""
+                if not nr: continue
+                stat = r[idx_stat].strip() if idx_stat is not None and idx_stat < len(r) else ""
+                fahrer = r[idx_fahrer].strip() if idx_fahrer is not None and idx_fahrer < len(r) else ""
+                annahme = r[idx_annahme].strip() if idx_annahme is not None and idx_annahme < len(r) else ""
+                kfz = r[idx_kfz].strip() if idx_kfz is not None and idx_kfz < len(r) else ""
+                fahrzeug = r[idx_fahrzeug].strip() if idx_fahrzeug is not None and idx_fahrzeug < len(r) else ""
+                ag = r[idx_ag].strip() if idx_ag is not None and idx_ag < len(r) else ""
+                art = r[idx_art].strip() if idx_art is not None and idx_art < len(r) else ""
+                ort = r[idx_ort].strip() if idx_ort is not None and idx_ort < len(r) else ""
+
+                datum = annahme
+                zeit = ""
+                if " " in annahme:
+                    parts = annahme.split(" ", 1)
+                    datum = parts[0]
+                    zeit = parts[1][:5]
+
+                tarif, betrag = match_tariff_rule(stat, ag, art, nr, ort)
+                bemerkung = f"{art} / {tarif}" if tarif not in art else art
+                kfz_disp = f"{kfz} ({fahrzeug})" if kfz and fahrzeug else (kfz or fahrzeug or "-")
+
+                if fahrer:
+                    found_drivers.add(fahrer)
+
+                st.session_state.pool_orders[nr] = {
+                    "nr": nr, "fahrer": fahrer, "stat": stat, "datum": datum, "zeit": zeit,
+                    "kfz": kfz_disp, "ag": ag, "art": art, "tarif": tarif, "betrag": betrag,
+                    "bemerkung": bemerkung, "route": ort
+                }
+
+            st.session_state.detected_drivers = sorted(list(found_drivers))
+            st.session_state.file_hash = current_hash
+            st.rerun()
+
+# Wenn noch keine Datei da ist: Freundlicher Hinweis
+if not st.session_state.pool_orders and not st.session_state.prov_orders:
+    st.info("👆 Bitte wähle oben deine OnStreet-CSV aus. Anschließend erscheinen automatisch die Fahrer aus der Datei.")
+    st.stop()
+
+# 2. Fahrer-Auswahl dynamisch aus der CSV
+col_drv, col_info = st.columns([1, 2])
 
 with col_drv:
-    active_driver = st.selectbox("👤 Fahrer", ["Alle Fahrer", "Can-Erik Ross", "Ibrahim BelBahira"])
+    driver_options = ["Alle Fahrer"] + st.session_state.detected_drivers
+    
+    # Can-Erik automatisch als Standard vorauswählen, falls im Export vorhanden
+    default_idx = 0
+    for idx, d in enumerate(driver_options):
+        if "ross" in d.lower() or "can" in d.lower():
+            default_idx = idx
+            break
+            
+    active_driver = st.selectbox("👤 Fahrer filtern", driver_options, index=default_idx)
 
-# CSV verarbeiten
-if uploaded_file is not None and "last_uploaded" not in st.session_state:
-    content = uploaded_file.getvalue().decode("utf-8-sig", errors="ignore")
-    lines = [l for l in content.splitlines() if l.strip()]
-    if len(lines) >= 2:
-        delimiter = ";" if lines[0].count(";") > lines[0].count(",") else ","
-        reader = csv.reader(lines, delimiter=delimiter)
-        rows = list(reader)
-        headers = [h.strip().lower() for h in rows[0]]
+with col_info:
+    st.success(f"✅ {len(st.session_state.pool_orders) + len(st.session_state.prov_orders)} Touren geladen | Erkannte Fahrer: {len(st.session_state.detected_drivers)}")
 
-        def get_idx(cands):
-            for i, h in enumerate(headers):
-                if any(c in h for c in cands):
-                    return i
-            return None
-
-        idx_stat = get_idx(["aktueller status", "status"])
-        idx_nr = get_idx(["auftrag", "vorgang"])
-        idx_fahrer = get_idx(["fahrer", "mitarbeiter"])
-        idx_annahme = get_idx(["annahme", "datum"])
-        idx_kfz = get_idx(["kennzeichen", "kfz"])
-        idx_fahrzeug = get_idx(["fahrzeug", "typ"])
-        idx_ag = get_idx(["auftraggeber", "kunde"])
-        idx_art = get_idx(["auftragsart", "leistung"])
-        idx_ort = get_idx(["einsatzort", "ort", "straße"])
-
-        st.session_state.pool_orders.clear()
-        st.session_state.prov_orders.clear()
-
-        for r in rows[1:]:
-            if not any(r): continue
-            nr = r[idx_nr].strip() if idx_nr is not None and idx_nr < len(r) else ""
-            if not nr: continue
-            stat = r[idx_stat].strip() if idx_stat is not None and idx_stat < len(r) else ""
-            fahrer = r[idx_fahrer].strip() if idx_fahrer is not None and idx_fahrer < len(r) else ""
-            annahme = r[idx_annahme].strip() if idx_annahme is not None and idx_annahme < len(r) else ""
-            kfz = r[idx_kfz].strip() if idx_kfz is not None and idx_kfz < len(r) else ""
-            fahrzeug = r[idx_fahrzeug].strip() if idx_fahrzeug is not None and idx_fahrzeug < len(r) else ""
-            ag = r[idx_ag].strip() if idx_ag is not None and idx_ag < len(r) else ""
-            art = r[idx_art].strip() if idx_art is not None and idx_art < len(r) else ""
-            ort = r[idx_ort].strip() if idx_ort is not None and idx_ort < len(r) else ""
-
-            datum = annahme
-            zeit = ""
-            if " " in annahme:
-                parts = annahme.split(" ", 1)
-                datum = parts[0]
-                zeit = parts[1][:5]
-
-            tarif, betrag = match_tariff_rule(stat, ag, art, nr, ort)
-            bemerkung = f"{art} / {tarif}" if tarif not in art else art
-            kfz_disp = f"{kfz} ({fahrzeug})" if kfz and fahrzeug else (kfz or fahrzeug or "-")
-
-            st.session_state.pool_orders[nr] = {
-                "nr": nr, "fahrer": fahrer, "stat": stat, "datum": datum, "zeit": zeit,
-                "kfz": kfz_disp, "ag": ag, "art": art, "tarif": tarif, "betrag": betrag,
-                "bemerkung": bemerkung, "route": ort
-            }
-        st.session_state.last_uploaded = uploaded_file.name
-        st.success(f"{len(st.session_state.pool_orders)} Aufträge eingelesen!")
-
-# Filter & Aktionen Leiste
+# Filter & Aktions-Buttons
 st.markdown("---")
 c_date, c_act1, c_act2 = st.columns([2, 1, 1])
 
 with c_date:
+    # Sucht das erste Datum aus der Liste als Standard
+    default_d = date.today()
+    for o in list(st.session_state.pool_orders.values()) + list(st.session_state.prov_orders.values()):
+        dt = parse_dt(o["datum"])
+        if dt:
+            default_d = dt.date()
+            break
+
     selected_range = st.date_input(
-        "📅 Bereitschafts-Zeitraum (z. B. Fr – So)",
-        value=(date(2026, 9, 25), date(2026, 9, 27))
+        "📅 Schicht-Zeitraum auswählen",
+        value=(default_d, default_d + timedelta(days=2))
     )
 
 with c_act1:
-    if st.button("⏰ Nur dieses WE übernehmen", use_container_width=True):
+    if st.button("⏰ Schicht übernehmen", use_container_width=True):
         if isinstance(selected_range, tuple) and len(selected_range) == 2:
             start_d, end_d = selected_range
+            f_filter = active_driver.lower() if active_driver != "Alle Fahrer" else ""
             moved = 0
             for nr in list(st.session_state.pool_orders.keys()):
                 o = st.session_state.pool_orders[nr]
-                if o["betrag"] == 0.0: continue
+                if f_filter and f_filter not in o["fahrer"].lower():
+                    continue
+                if o["betrag"] == 0.0:
+                    continue
                 dt = parse_dt(f"{o['datum']} {o['zeit']}")
                 if dt and (start_d <= dt.date() <= end_d):
-                    # Fr ab 21h und So bis 21h Check
+                    # Freitag ab 21h bis Sonntag 21h Check
                     w = dt.weekday()
-                    if w == 4 and dt.hour < 21: continue
-                    if w == 6 and (dt.hour > 21 or (dt.hour == 21 and dt.minute > 0)): continue
+                    if w == 4 and dt.hour < 21:
+                        continue
+                    if w == 6 and (dt.hour > 21 or (dt.hour == 21 and dt.minute > 0)):
+                        continue
                     st.session_state.prov_orders[nr] = st.session_state.pool_orders.pop(nr)
                     moved += 1
             st.rerun()
 
 with c_act2:
     if st.button("⚡ Alle Touren rüberholen", use_container_width=True):
+        f_filter = active_driver.lower() if active_driver != "Alle Fahrer" else ""
         for nr in list(st.session_state.pool_orders.keys()):
             o = st.session_state.pool_orders[nr]
+            if f_filter and f_filter not in o["fahrer"].lower():
+                continue
             if o["betrag"] > 0:
                 st.session_state.prov_orders[nr] = st.session_state.pool_orders.pop(nr)
         st.rerun()
@@ -322,6 +367,7 @@ with tab_zettel:
         df_zettel = pd.DataFrame([{
             "Datum": format_date_with_weekday(o["datum"]),
             "Auftrag": o["nr"],
+            "Fahrer": o["fahrer"],
             "Kennzeichen": o["kfz"],
             "Auftraggeber": o["ag"],
             "Bemerkung": o["bemerkung"],
@@ -329,7 +375,6 @@ with tab_zettel:
         } for o in prov_list])
         st.dataframe(df_zettel, use_container_width=True, hide_index=True)
 
-        # Schnellauswahl zum Zurückschieben
         remove_nr = st.selectbox("Tour zurück in den Pool schieben:", ["-"] + [o["nr"] for o in prov_list])
         if remove_nr != "-":
             st.session_state.pool_orders[remove_nr] = st.session_state.prov_orders.pop(remove_nr)
@@ -344,6 +389,7 @@ with tab_pool:
             "Auftrag": o["nr"],
             "Datum": format_date_with_weekday(o["datum"]),
             "Zeit": o["zeit"],
+            "Fahrer": o["fahrer"],
             "Fahrzeug": o["kfz"],
             "Auftraggeber": o["ag"],
             "Status": o["stat"]
@@ -361,7 +407,6 @@ with tab_pool:
 st.markdown("---")
 st.subheader("📤 Export & WhatsApp")
 
-# WhatsApp Text generieren
 drv_title = f" – {active_driver}" if active_driver != "Alle Fahrer" else ""
 wa_lines = [
     f"📋 *Bereitschafts-Abrechnung{drv_title}*",
@@ -374,11 +419,12 @@ wa_text = "\n".join(wa_lines)
 exp1, exp2 = st.columns(2)
 
 with exp1:
-    st.text_area("📋 Text für WhatsApp (einfach markieren & kopieren)", value=wa_text, height=140)
+    st.text_area("📋 Text für WhatsApp (markieren & kopieren)", value=wa_text, height=140)
 
 with exp2:
     if HAS_REPORTLAB and prov_list:
-        pdf_bytes = generate_pdf_bytes(prov_list, active_driver if active_driver != "Alle Fahrer" else "Can-Erik Ross", datetime.now().strftime("%B %Y"))
+        pdf_name = active_driver if active_driver != "Alle Fahrer" else "Can-Erik Ross"
+        pdf_bytes = generate_pdf_bytes(prov_list, pdf_name, datetime.now().strftime("%B %Y"))
         st.download_button(
             label="📄 Cuvenhaus PDF herunterladen",
             data=pdf_bytes,
@@ -387,7 +433,6 @@ with exp2:
             use_container_width=True
         )
 
-    # CSV Download
     csv_buf = io.StringIO()
     writer = csv.writer(csv_buf, delimiter=";")
     writer.writerow(["DATUM", "AUFTRAGS-NUMMER", "KENNZEICHEN", "AUFTRAGGEBER", "BEMERKUNG", "BETRAG"])
