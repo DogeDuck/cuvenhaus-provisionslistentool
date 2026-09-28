@@ -456,11 +456,11 @@ with col_zettel:
     st.subheader("💰 2. Deine Abrechnung (Cuvenhaus-Zettel)")
     
     if prov_list:
-        act_c1, act_c2 = st.columns(2)
+        act_c1, act_c2, act_c3 = st.columns(3)
         with act_c1:
             quick_rem = st.selectbox(
-                "↩️ Zurück in den Pool:",
-                ["- Wählen -"] + [f"{o['nr']} | {o['kfz']} ({float(o['betrag']):.2f} €)" for o in prov_list],
+                "↩️ In Pool:",
+                ["- Wählen -"] + [f"{o['nr']} | {o['kfz']}" for o in prov_list],
                 key="sb_rem_prov"
             )
             if quick_rem != "- Wählen -":
@@ -470,7 +470,7 @@ with col_zettel:
 
         with act_c2:
             storno_sel = st.selectbox(
-                "🚫 Als Storno markieren (0 €):",
+                "🚫 Storno:",
                 ["- Wählen -"] + [f"{o['nr']} | {o['kfz']}" for o in prov_list if o["betrag"] > 0],
                 key="sb_storno"
             )
@@ -479,6 +479,28 @@ with col_zettel:
                 st.session_state.prov_orders[target_nr]["betrag"] = 0.0
                 st.session_state.prov_orders[target_nr]["bemerkung"] = "Storno (0 €)"
                 st.rerun()
+
+        # NEU: Rotes X / Löschen direkt als 3. Aktion
+        with act_c3:
+            del_sel = st.selectbox(
+                "❌ Löschen:",
+                ["- Wählen -"] + [f"{o['nr']} | {o['kfz']}" for o in prov_list],
+                key="sb_del_prov"
+            )
+            if del_sel != "- Wählen -":
+                target_nr = del_sel.split(" | ")[0]
+                if target_nr in st.session_state.prov_orders:
+                    del st.session_state.prov_orders[target_nr]
+                    st.rerun()
+
+        # NEU: Schnelles Löschen per Klick auf rotes X
+        with st.expander("❌ Touren einzeln per rotem X löschen", expanded=False):
+            for o in prov_list:
+                r_c1, r_c2 = st.columns([5, 1])
+                r_c1.write(f"**{o['nr']}** | {o['datum']} | {o['kfz']} | {o['bemerkung']} ({float(o['betrag']):.2f} €)")
+                if r_c2.button("❌", key=f"del_btn_{o['nr']}", help=f"Auftrag {o['nr']} löschen"):
+                    del st.session_state.prov_orders[o['nr']]
+                    st.rerun()
 
         # Tarif / Festpreis manuell ändern
         with st.expander("✏️ Tarif / Festpreis anpassen (z. B. ADAC FP 1 / 2 / 3)", expanded=False):
