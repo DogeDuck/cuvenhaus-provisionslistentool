@@ -122,6 +122,7 @@ NOMINATIM_USER_AGENT = (
 SUCCESS_TTL_SECONDS = 180 * 24 * 60 * 60
 NOT_FOUND_TTL_SECONDS = 24 * 60 * 60
 NOMINATIM_MIN_INTERVAL = 1.05
+ADDRESS_NORMALIZER_VERSION = "v3"
 
 GEOCODE_LOCK = threading.Lock()
 LAST_NOMINATIM_REQUEST = 0.0
@@ -316,33 +317,183 @@ def normalize_search_text(value):
 
 def normalize_address(value):
     value = safe_text(value)
-
     if not value:
         return ""
-
-    value = value.replace("\n", " ")
-    value = value.replace("\r", " ")
-    value = re.sub(r"\s+", " ", value)
-
-    # Häufige OnStreet-Dopplungen etwas entschärfen.
-    value = re.sub(r",\s*,+", ", ", value)
-    value = value.strip(" ,")
-
+    value = value.replace("\n", " ").replace("\r", " ")
+    value = re.sub(r"\s+", " ", value).strip(" ,")
     normalized = normalize_search_text(value)
     normalized = normalized.replace("straße", "strasse")
     normalized = normalized.replace("str.", "strasse")
-    normalized = re.sub(r"[^a-z0-9äöüß|,.\- /]", "", normalized)
-    normalized = re.sub(r"\s+", " ", normalized)
+    normalized = re.sub(r"[^a-z0-9,./\- ]", "", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
 
-    return normalized.strip()
+
+def comparison_text(value):
+    value = normalize_search_text(value)
+    value = value.replace("straße", "strasse")
+    value = value.replace("str.", "strasse")
+    value = re.sub(r"[^a-z0-9]", "", value)
+    return value
+
+
+def smart_city_name(value):
+    value = safe_text(value)
+    value = re.sub(r"\([^)]{1,8}\)", "", value)
+    value = re.sub(r"\b\d{5}\b", "", value)
+    value = re.sub(r"\s+", " ", value).strip(" ,")
+    if value.isupper():
+        value = value.title()
+    return value
+
+
+def smart_street_name(value):
+    value = safe_text(value)
+    value = re.sub(r"\s+", " ", value).strip(" ,")
+    if value.isupper():
+        value = value.title()
+    return value
+
+
+def remove_duplicate_fragment(value):
+    """Entfernt typische OnStreet-Dopplungen, auch direkt aneinandergeklebt."""
+    value = re.sub(r"\s+", " ", safe_text(value)).strip(" ,")
+    if not value:
+        return ""
+
+    # Exakte doppelte Hälfte: 'ABC 2ABC 2'.
+    compact = value.strip()
+    n = len(compact)
+    for split in range(max(1, n // 2 - 3), min(n, n // 2 + 4)):
+        a, b = compact[:split].strip(), compact[split:].strip()
+        if a and comparison_text(a) == comparison_text(b):
+            return a
+
+    # Doppelte Wortfolge: 'HEINRICH... HEINRICH...'.
+    words = compact.split()
+    for size in range(len(words) // 2, 0, -1):
+        if len(words) >= size * 2:
+            a = " ".join(words[:size])
+            b = " ".join(words[size:size * 2])
+            if comparison_text(a) == comparison_text(b):
+                rest = " ".join(words[size * 2:]).strip()
+                return (a + (" " + rest if rest else "")).strip()
+
+    # Wiederholung eines längeren Präfixes irgendwo in der zweiten Hälfte.
+    normalized = comparison_text(compact)
+    if len(normalized) >= 10:
+        for i in range(5, len(compact)):
+            left = compact[:i].strip()
+            right = compact[i:].strip()
+            if len(comparison_text(left)) >= 6 and comparison_text(right).startswith(comparison_text(left)):
+                return left
+    return compact
+
+
+def clean_onstreet_address(raw):
+    """Macht aus OnStreet-Müll eine geocodierbare deutsche Adresse."""
+    original = safe_text(raw)
+    if not original:
+        return {
+            "raw": "", "address": "", "street": "", "house_number": "",
+            "postal_code": "", "city": "", "has_street": False,
+            "has_house_number": False, "is_precise_input": False,
+            "warning": "Keine Adresse vorhanden",
+        }
+
+    text = original.replace("\n", " ").replace("\r", " ")
+    text = re.sub(r"\([^)]{1,8}\)", "", text)  # (BN), (SU) usw.
+    text = re.sub(r"\s+", " ", text).strip(" ,")
+    parts = [re.sub(r"\s+", " ", p).strip(" ,") for p in text.split(",") if p.strip(" ,")]
+
+    postal_code = ""
+    city = ""
+    # Der letzte PLZ/Ort-Block ist bei OnStreet meist der sauberste.
+    for part in reversed(parts):
+        m = re.search(r"\b(\d{5})\b\s*(.*)$", part)
+        if m:
+            postal_code = m.group(1)
+            city_candidate = smart_city_name(m.group(2))
+            if city_candidate:
+                city = city_candidate
+                break
+
+    # Auch ohne PLZ den Ort aus dem letzten Komma-Block übernehmen.
+    if not city and len(parts) >= 2:
+        tail = smart_city_name(parts[-1])
+        if tail and not re.search(r"\d", tail):
+            city = tail
+
+    first = parts[0] if parts else text
+    first = re.sub(r"^\s*\d{5}\s+", "", first)
+
+    # Führenden Ort aus dem ersten Block entfernen.
+    if city:
+        city_pat = re.escape(city)
+        first = re.sub(rf"^\s*{city_pat}\s+", "", first, flags=re.I)
+    else:
+        # Häufig: 'Bonn Austr 3...' ohne PLZ. Ersten Ort über den letzten Block erkennen.
+        if len(parts) >= 2:
+            tail_city = smart_city_name(parts[-1])
+            if tail_city:
+                city = tail_city
+                first = re.sub(rf"^\s*{re.escape(city)}\s+", "", first, flags=re.I)
+
+    first = remove_duplicate_fragment(first)
+    unknown_street = bool(re.search(r"unbekannt(?:er|e|es)?\s+stra(?:ss|ß)enname", first, re.I))
+    if unknown_street:
+        street = ""
+    else:
+        street = smart_street_name(first)
+
+    # Falls der Ort noch vorne an der Straße hängt, ein zweites Mal entfernen.
+    if city and street:
+        street = re.sub(rf"^\s*{re.escape(city)}\s+", "", street, flags=re.I).strip()
+
+    hn_match = re.search(r"\b(\d+[a-zA-Z]?(?:\s*[-/]\s*\d+[a-zA-Z]?)?)\b", street)
+    house_number = hn_match.group(1).replace(" ", "") if hn_match else ""
+
+    # Nur ein echter Straßenanteil zählt als Straße.
+    street_words = comparison_text(street)
+    has_street = bool(street and len(street_words) >= 4 and not unknown_street)
+    has_house_number = bool(house_number)
+
+    address_parts = []
+    if has_street:
+        address_parts.append(street)
+    locality = " ".join(x for x in [postal_code, city] if x).strip()
+    if locality:
+        address_parts.append(locality)
+    address_parts.append("Deutschland")
+    address = ", ".join(address_parts)
+
+    warning = ""
+    if unknown_street:
+        warning = "Straßenname in OnStreet unbekannt; nur Ort/PLZ verwendbar"
+    elif not city:
+        warning = "Kein Ort erkannt"
+    elif not has_street:
+        warning = "Keine brauchbare Straße erkannt"
+    elif not has_house_number:
+        warning = "Keine Hausnummer; Straßenposition ist nur näherungsweise"
+
+    return {
+        "raw": original,
+        "address": address,
+        "street": street if has_street else "",
+        "house_number": house_number,
+        "postal_code": postal_code,
+        "city": city,
+        "has_street": has_street,
+        "has_house_number": has_house_number,
+        "is_precise_input": bool(has_street and has_house_number and city),
+        "warning": warning,
+    }
 
 
 def address_cache_key(address):
     normalized = normalize_address(address)
-    return hashlib.sha256(
-        f"{normalized}|de".encode("utf-8")
-    ).hexdigest()
-
+    payload = f"{ADDRESS_NORMALIZER_VERSION}|{normalized}|de"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 def is_storno_order(stat, art="", nr="", ag=""):
     combined = normalize_search_text(
@@ -393,11 +544,7 @@ def is_adac_order(ag, art="", nr="", stat=""):
 # ============================================================
 
 def get_db_connection():
-    conn = sqlite3.connect(
-        GEOCODE_DB,
-        timeout=20,
-        check_same_thread=False,
-    )
+    conn = sqlite3.connect(GEOCODE_DB, timeout=20, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -405,8 +552,7 @@ def get_db_connection():
 def init_geocode_db():
     try:
         with get_db_connection() as conn:
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS geocode_cache (
                     cache_key TEXT PRIMARY KEY,
                     normalized_address TEXT NOT NULL,
@@ -415,10 +561,16 @@ def init_geocode_db():
                     longitude REAL,
                     display_name TEXT,
                     status TEXT NOT NULL,
-                    updated_at REAL NOT NULL
+                    updated_at REAL NOT NULL,
+                    quality TEXT DEFAULT '',
+                    details_json TEXT DEFAULT ''
                 )
-                """
-            )
+            """)
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(geocode_cache)")}
+            if "quality" not in columns:
+                conn.execute("ALTER TABLE geocode_cache ADD COLUMN quality TEXT DEFAULT ''")
+            if "details_json" not in columns:
+                conn.execute("ALTER TABLE geocode_cache ADD COLUMN details_json TEXT DEFAULT ''")
             conn.commit()
     except Exception:
         pass
@@ -429,219 +581,165 @@ init_geocode_db()
 
 def read_geocode_cache(address, allow_expired=False):
     key = address_cache_key(address)
-
     try:
         with get_db_connection() as conn:
-            row = conn.execute(
-                """
-                SELECT *
-                FROM geocode_cache
-                WHERE cache_key = ?
-                """,
-                (key,),
-            ).fetchone()
+            row = conn.execute("SELECT * FROM geocode_cache WHERE cache_key = ?", (key,)).fetchone()
     except Exception:
         return None
-
     if not row:
         return None
-
     age = time.time() - float(row["updated_at"])
-
-    ttl = (
-        SUCCESS_TTL_SECONDS
-        if row["status"] == "OK"
-        else NOT_FOUND_TTL_SECONDS
-    )
-
+    ttl = SUCCESS_TTL_SECONDS if row["status"] == "OK" else NOT_FOUND_TTL_SECONDS
     expired = age > ttl
-
     if expired and not allow_expired:
         return None
-
+    try:
+        details = json.loads(row["details_json"] or "{}")
+    except Exception:
+        details = {}
     return {
-        "status": row["status"],
-        "lat": row["latitude"],
-        "lon": row["longitude"],
-        "display_name": row["display_name"] or "",
-        "address": row["original_address"] or address,
-        "normalized_address": row["normalized_address"],
-        "cached": True,
-        "expired": expired,
+        "status": row["status"], "lat": row["latitude"], "lon": row["longitude"],
+        "display_name": row["display_name"] or "", "address": row["original_address"] or address,
+        "normalized_address": row["normalized_address"], "cached": True, "expired": expired,
+        "quality": row["quality"] or "", "details": details,
     }
 
 
-def write_geocode_cache(
-    address,
-    status,
-    lat=None,
-    lon=None,
-    display_name="",
-):
+def write_geocode_cache(address, status, lat=None, lon=None, display_name="", quality="", details=None):
     key = address_cache_key(address)
-
     try:
         with get_db_connection() as conn:
-            conn.execute(
-                """
+            conn.execute("""
                 INSERT INTO geocode_cache (
-                    cache_key,
-                    normalized_address,
-                    original_address,
-                    latitude,
-                    longitude,
-                    display_name,
-                    status,
-                    updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    cache_key, normalized_address, original_address, latitude, longitude,
+                    display_name, status, updated_at, quality, details_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(cache_key) DO UPDATE SET
-                    normalized_address = excluded.normalized_address,
-                    original_address = excluded.original_address,
-                    latitude = excluded.latitude,
-                    longitude = excluded.longitude,
-                    display_name = excluded.display_name,
-                    status = excluded.status,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    key,
-                    normalize_address(address),
-                    address,
-                    lat,
-                    lon,
-                    display_name,
-                    status,
-                    time.time(),
-                ),
-            )
+                    normalized_address=excluded.normalized_address,
+                    original_address=excluded.original_address,
+                    latitude=excluded.latitude, longitude=excluded.longitude,
+                    display_name=excluded.display_name, status=excluded.status,
+                    updated_at=excluded.updated_at, quality=excluded.quality,
+                    details_json=excluded.details_json
+            """, (
+                key, normalize_address(address), address, lat, lon, display_name,
+                status, time.time(), quality, json.dumps(details or {}, ensure_ascii=False),
+            ))
             conn.commit()
     except Exception:
         pass
 
 
-# ============================================================
-# NOMINATIM
-# ============================================================
+def _street_similarity(input_street, details):
+    result_street = safe_text(
+        details.get("road") or details.get("pedestrian") or details.get("residential")
+        or details.get("footway") or details.get("path") or details.get("street")
+    )
+    a, b = comparison_text(input_street), comparison_text(result_street)
+    if not a or not b:
+        return False
+    return a == b or a in b or b in a
 
-def geocode_address(address):
+
+def _city_similarity(input_city, details):
+    result_city = safe_text(
+        details.get("city") or details.get("town") or details.get("village")
+        or details.get("municipality") or details.get("suburb")
+    )
+    a, b = comparison_text(input_city), comparison_text(result_city)
+    if not a or not b:
+        return False
+    return a == b or a in b or b in a
+
+
+def assess_geocode_quality(cleaned, result):
+    details = result.get("address") or {}
+    if not cleaned.get("has_street"):
+        return "estimated"
+    if not _street_similarity(cleaned.get("street", ""), details):
+        return "estimated"
+    if cleaned.get("city") and not _city_similarity(cleaned.get("city", ""), details):
+        return "estimated"
+    requested_hn = comparison_text(cleaned.get("house_number", ""))
+    returned_hn = comparison_text(details.get("house_number", ""))
+    if requested_hn:
+        if not returned_hn or requested_hn != returned_hn:
+            return "estimated"
+        return "exact"
+    return "estimated"
+
+
+def geocode_cleaned_address(cleaned):
+    """Sucht eine bereinigte Adresse. Cache zuerst, Nominatim nur wenn nötig."""
     global LAST_NOMINATIM_REQUEST
-
-    address = safe_text(address)
-
-    if not address:
-        return {
-            "status": "EMPTY",
-            "lat": None,
-            "lon": None,
-            "display_name": "",
-            "cached": False,
-            "error": "Keine Adresse vorhanden",
-        }
+    address = safe_text(cleaned.get("address"))
+    if not address or address == "Deutschland":
+        return {"status": "EMPTY", "lat": None, "lon": None, "display_name": "", "cached": False,
+                "quality": "unknown", "error": "Keine geocodierbare Adresse"}
 
     cached = read_geocode_cache(address)
-
     if cached:
         return cached
+    stale = read_geocode_cache(address, allow_expired=True)
 
-    stale = read_geocode_cache(
-        address,
-        allow_expired=True,
-    )
-
-    params = {
-        "q": address,
-        "format": "jsonv2",
-        "limit": 1,
-        "countrycodes": "de",
-        "addressdetails": 1,
-    }
+    params = {"format": "jsonv2", "limit": 3, "countrycodes": "de", "addressdetails": 1}
+    # Strukturierte Suche ist für OnStreet-Adressen stabiler als ein einziger q-String.
+    if cleaned.get("has_street") and cleaned.get("city"):
+        params["street"] = cleaned["street"]
+        params["city"] = cleaned["city"]
+        if cleaned.get("postal_code"):
+            params["postalcode"] = cleaned["postal_code"]
+        params["country"] = "Germany"
+    else:
+        params["q"] = address
 
     url = f"{NOMINATIM_URL}?{urlencode(params)}"
-
     try:
         with GEOCODE_LOCK:
             elapsed = time.monotonic() - LAST_NOMINATIM_REQUEST
-
             if elapsed < NOMINATIM_MIN_INTERVAL:
-                time.sleep(
-                    NOMINATIM_MIN_INTERVAL - elapsed
-                )
-
-            request = Request(
-                url,
-                headers={
-                    "User-Agent": NOMINATIM_USER_AGENT,
-                    "Accept": "application/json",
-                },
-            )
-
+                time.sleep(NOMINATIM_MIN_INTERVAL - elapsed)
+            request = Request(url, headers={"User-Agent": NOMINATIM_USER_AGENT, "Accept": "application/json"})
             LAST_NOMINATIM_REQUEST = time.monotonic()
-
             with urlopen(request, timeout=12) as response:
-                raw = response.read().decode("utf-8")
-                data = json.loads(raw)
+                data = json.loads(response.read().decode("utf-8"))
 
         if not data:
-            write_geocode_cache(
-                address,
-                "NOT_FOUND",
-            )
+            write_geocode_cache(address, "NOT_FOUND", quality="unknown")
+            return {"status": "NOT_FOUND", "lat": None, "lon": None, "display_name": "", "cached": False,
+                    "quality": "unknown", "error": "Adresse nicht gefunden"}
 
-            return {
-                "status": "NOT_FOUND",
-                "lat": None,
-                "lon": None,
-                "display_name": "",
-                "cached": False,
-                "error": "Adresse nicht gefunden",
-            }
-
-        result = data[0]
-
-        lat = float(result["lat"])
-        lon = float(result["lon"])
-
-        display_name = safe_text(
-            result.get("display_name")
-        )
-
-        write_geocode_cache(
-            address,
-            "OK",
-            lat,
-            lon,
-            display_name,
-        )
-
-        return {
-            "status": "OK",
-            "lat": lat,
-            "lon": lon,
-            "display_name": display_name,
-            "cached": False,
-            "expired": False,
-        }
+        # Bevorzuge den Treffer, dessen Straße und Ort wirklich passen.
+        ranked = []
+        for result in data:
+            quality = assess_geocode_quality(cleaned, result)
+            score = 2 if quality == "exact" else 1
+            if _street_similarity(cleaned.get("street", ""), result.get("address") or {}):
+                score += 2
+            if _city_similarity(cleaned.get("city", ""), result.get("address") or {}):
+                score += 1
+            ranked.append((score, quality, result))
+        ranked.sort(key=lambda x: x[0], reverse=True)
+        _, quality, result = ranked[0]
+        lat, lon = float(result["lat"]), float(result["lon"])
+        display_name = safe_text(result.get("display_name"))
+        details = result.get("address") or {}
+        write_geocode_cache(address, "OK", lat, lon, display_name, quality, details)
+        return {"status": "OK", "lat": lat, "lon": lon, "display_name": display_name,
+                "cached": False, "expired": False, "quality": quality, "details": details}
 
     except (HTTPError, URLError, TimeoutError, ValueError, OSError) as exc:
-        # Bei temporärem Ausfall darf ein alter erfolgreicher Treffer
-        # weiterverwendet werden.
         if stale and stale.get("status") == "OK":
             stale["stale"] = True
-            stale["error"] = (
-                "Geocoder nicht erreichbar; "
-                "alter Cache-Treffer verwendet"
-            )
+            stale["error"] = "Geocoder nicht erreichbar; alter Cache-Treffer verwendet"
             return stale
+        return {"status": "ERROR", "lat": None, "lon": None, "display_name": "", "cached": False,
+                "quality": "unknown", "error": str(exc)}
 
-        return {
-            "status": "ERROR",
-            "lat": None,
-            "lon": None,
-            "display_name": "",
-            "cached": False,
-            "error": str(exc),
-        }
+
+def geocode_address(address):
+    """Kompatibilitätsfunktion für alte Aufrufe."""
+    return geocode_cleaned_address(clean_onstreet_address(address))
 
 
 # ============================================================
@@ -863,9 +961,6 @@ def detect_adac_zone_fallback(address):
     ):
         return "FP 2"
 
-    if text:
-        return "FP 1"
-
     return None
 
 
@@ -874,96 +969,66 @@ def detect_adac_zone_fallback(address):
 # ============================================================
 
 def resolve_address_zone(address):
-    address = safe_text(address)
+    raw = safe_text(address)
+    cleaned = clean_onstreet_address(raw)
+    if not raw:
+        return {"zone": None, "source": "missing", "quality": "unknown", "lat": None, "lon": None,
+                "warning": True, "message": "Keine Adresse", "cleaned_address": "", "display_name": ""}
 
-    if not address:
-        return {
-            "zone": None,
-            "source": "missing",
-            "lat": None,
-            "lon": None,
-            "warning": True,
-            "message": "Keine Adresse",
-        }
-
-    geo = geocode_address(address)
-
-    if (
-        geo.get("status") == "OK"
-        and geo.get("lat") is not None
-        and geo.get("lon") is not None
-    ):
-        zone = detect_zone_from_coordinates(
-            geo["lat"],
-            geo["lon"],
-        )
-
+    geo = geocode_cleaned_address(cleaned)
+    if geo.get("status") == "OK" and geo.get("lat") is not None and geo.get("lon") is not None:
+        zone = detect_zone_from_coordinates(geo["lat"], geo["lon"])
+        quality = geo.get("quality") or "estimated"
+        if geo.get("stale"):
+            quality = "estimated"
         if zone:
+            exact = quality == "exact"
             return {
                 "zone": zone,
-                "source": (
-                    "cache"
-                    if geo.get("cached")
-                    else "geocoding"
-                ),
-                "lat": geo["lat"],
-                "lon": geo["lon"],
-                "warning": bool(
-                    geo.get("stale", False)
-                ),
-                "message": (
-                    "Alter Cache-Treffer"
-                    if geo.get("stale")
-                    else "Geofence erkannt"
-                ),
+                "source": "cache" if geo.get("cached") else "geocoding",
+                "quality": quality, "lat": geo["lat"], "lon": geo["lon"],
+                "warning": not exact,
+                "message": "Geofence exakt erkannt" if exact else "Koordinate erkannt, Adresse aber nicht hausnummerngenau",
+                "cleaned_address": cleaned.get("address", ""), "display_name": geo.get("display_name", ""),
             }
-
-        fallback = detect_adac_zone_fallback(
-            address
-        )
-
+        # Eine echte Koordinate außerhalb aller FP-Flächen darf nicht per PLZ zurück in eine Zone gezwungen werden.
         return {
-            "zone": fallback,
-            "source": "fallback",
-            "lat": geo["lat"],
-            "lon": geo["lon"],
-            "warning": True,
-            "message": (
-                "Koordinate liegt außerhalb der "
-                "bekannten FP-Geofences; "
-                "PLZ/Ort nur als Schätzung"
-            ),
+            "zone": None, "source": "geocoding", "quality": quality, "lat": geo["lat"], "lon": geo["lon"],
+            "warning": True, "message": "Koordinate liegt außerhalb der bekannten FP-Geofences",
+            "cleaned_address": cleaned.get("address", ""), "display_name": geo.get("display_name", ""),
         }
 
-    fallback = detect_adac_zone_fallback(address)
-
+    fallback = detect_adac_zone_fallback(cleaned.get("address") or raw)
     return {
-        "zone": fallback,
-        "source": "fallback",
-        "lat": None,
-        "lon": None,
+        "zone": fallback, "source": "fallback" if fallback else "unknown",
+        "quality": "estimated" if fallback else "unknown", "lat": None, "lon": None,
         "warning": True,
-        "message": (
-            "Geocoding nicht möglich; "
-            "PLZ/Ort nur als Schätzung"
-        ),
+        "message": "PLZ/Ort nur als Schätzung" if fallback else "Adresse konnte nicht zuverlässig bestimmt werden",
+        "cleaned_address": cleaned.get("address", ""), "display_name": "",
     }
 
 
-def highest_zone(*zones):
-    valid = [
-        z
-        for z in zones
-        if z in ZONE_RANK
-    ]
-
+def highest_route_zone(start_zone, target_zone):
+    valid = [z for z in (start_zone, target_zone) if z in ZONE_RANK]
     if not valid:
         return None
+    return max(valid, key=lambda z: ZONE_RANK[z])
 
-    return max(
-        valid,
-        key=lambda z: ZONE_RANK[z],
-    )
+
+def highest_zone(*zones):
+    valid = [z for z in zones if z in ZONE_RANK]
+    if not valid:
+        return None
+    return max(valid, key=lambda z: ZONE_RANK[z])
+
+
+def zone_status_symbol(result):
+    quality = result.get("quality")
+    if quality == "exact":
+        return "✓"
+    if quality == "estimated":
+        return "~"
+    return "⚠"
 
 
 # ============================================================
@@ -1013,7 +1078,7 @@ def calculate_adac_order(order, force=False):
     start_zone = start_result.get("zone")
     target_zone = target_result.get("zone")
 
-    auto_zone = highest_zone(
+    auto_zone = highest_route_zone(
         start_zone,
         target_zone,
     )
@@ -1042,6 +1107,12 @@ def calculate_adac_order(order, force=False):
     order["start_lon"] = start_result.get("lon")
     order["target_lat"] = target_result.get("lat")
     order["target_lon"] = target_result.get("lon")
+    order["start_cleaned_address"] = start_result.get("cleaned_address", "")
+    order["target_cleaned_address"] = target_result.get("cleaned_address", "")
+    order["start_quality"] = start_result.get("quality", "unknown")
+    order["target_quality"] = target_result.get("quality", "unknown")
+    order["start_message"] = start_result.get("message", "")
+    order["target_message"] = target_result.get("message", "")
 
     order["zone_warning"] = bool(
         start_result.get("warning")
@@ -1086,13 +1157,13 @@ def calculate_adac_order(order, force=False):
             order["betrag"] = amount
 
         start_label = (
-            ZONE_LABEL.get(start_zone, "?")
+            f"{ZONE_LABEL.get(start_zone, '?')} {zone_status_symbol(start_result)}"
             if start_address
             else "-"
         )
 
         target_label = (
-            ZONE_LABEL.get(target_zone, "?")
+            f"{ZONE_LABEL.get(target_zone, '?')} {zone_status_symbol(target_result)}"
             if target_address
             else "-"
         )
@@ -2554,11 +2625,19 @@ if provisioned_orders:
         edit_order.get("raw_nr", ""),
         edit_order.get("stat", ""),
     ):
+        def coord_text(lat, lon):
+            if lat is None or lon is None:
+                return "–"
+            return f"{lat:.6f}, {lon:.6f}"
+
         st.markdown(
-            f"**Start:** {edit_order.get('start') or '–'}  \n"
-            f"**Ziel:** {edit_order.get('ziel') or '–'}  \n"
-            f"**Erkennung:** "
-            f"{edit_order.get('zone_text') or 'noch nicht geprüft'}"
+            f"**Start (OnStreet):** {edit_order.get('start') or '–'}  \n"
+            f"**Start bereinigt:** {edit_order.get('start_cleaned_address') or '–'}  \n"
+            f"**Start Koordinate:** {coord_text(edit_order.get('start_lat'), edit_order.get('start_lon'))}  \n"
+            f"**Ziel (OnStreet):** {edit_order.get('ziel') or '–'}  \n"
+            f"**Ziel bereinigt:** {edit_order.get('target_cleaned_address') or '–'}  \n"
+            f"**Ziel Koordinate:** {coord_text(edit_order.get('target_lat'), edit_order.get('target_lon'))}  \n"
+            f"**Erkennung:** {edit_order.get('zone_text') or 'noch nicht geprüft'}"
         )
 
         if edit_order.get("zone_warning"):
