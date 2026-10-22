@@ -1,39 +1,33 @@
 # Cuvenhaus Manager 2.0 – Einrichtung
 
-Der neue Bereich ist in der bestehenden App unter **Cuvenhaus Manager 2.0** erreichbar.
+## Fahrer statt Mitarbeiter-Logins
 
-## Sicherheit / Mitarbeiter-Logins
-Für die Anmeldung wird Streamlit OIDC (st.login) verwendet. Im Streamlit-Dashboard unter **Settings → Secrets** konfigurieren:
+Es gibt **keine Anmeldepflicht** und keine Mitarbeiterkonten. Fahrernamen werden wie bisher direkt aus der importierten OnStreet-CSV ermittelt. Über die vorhandene Fahrerauswahl kann jeder die Aufträge und Provisionssummen der Fahrer einsehen.
+
+Die Auswahl **Alle Fahrer** bleibt für die vorhandene Auftragsansicht bestehen. Für die Speicherung von Historie und Bereitschaftskalender wird jeweils ein konkreter Fahrer ausgewählt.
+
+**Datenschutz:** Ohne Login gibt es keine technische Zugriffsbeschränkung. Die App sollte deshalb ausschließlich intern bereitgestellt werden; eine öffentliche Streamlit-Adresse mit echten Auftraggebern, Kennzeichen und Adressen ist nicht empfehlenswert.
+
+## Datenbank
+
+Für dauerhaft gespeicherte Historie und Kalender muss `DATABASE_URL` in Streamlit Secrets auf eine externe PostgreSQL-Datenbank verweisen. Lokale SQLite-Dateien auf Streamlit Community Cloud sind nicht dauerhaft.
 
 ```toml
-ALLOWED_EMAILS = "person1@firma.de,person2@firma.de"
-HISTORY_HMAC_SECRET = "LANGER_ZUFAELLIG_GENERIERTER_GEHEIMER_WERT"
 DATABASE_URL = "postgresql://BENUTZER:PASSWORT@HOST:5432/DATENBANK?sslmode=require"
-
-[auth]
-redirect_uri = "https://DEINE-APP.streamlit.app/oauth2callback"
-cookie_secret = "WEITERER_LANGER_GEHEIMER_WERT"
-client_id = "OIDC_CLIENT_ID"
-client_secret = "OIDC_CLIENT_SECRET"
-server_metadata_url = "https://OIDC-ANBIETER/.well-known/openid-configuration"
+HISTORY_HMAC_SECRET = "LANGER_ZUFAELLIGER_WERT_MIT_MINDESTENS_24_ZEICHEN"
 ```
 
-Bei OIDC müssen Client-ID, Client-Secret, Redirect URI und Provider-Metadaten vom eigenen Identitätsanbieter stammen. Die oben gezeigten Werte sind **Platzhalter**.
+Es werden Abrechnungssummen, ausgewählte Fahrer, Bereitschaftsfreitage und HMAC-basierte CSV-Fingerprints gespeichert. Keine vollständigen historischen Auftragslisten.
 
-**Wichtig:** Sobald `ALLOWED_EMAILS` gesetzt ist, schützt die App ihre gesamte Oberfläche mit OIDC und lässt nur diese E-Mail-Adressen zu. Vorher bleiben bisherige App-Bereiche offen: keinesfalls sensible Produktionsdateien in einer ungesicherten öffentlichen Instanz verarbeiten.
+## Grenzen
 
-## Dauerhafte Datenbank
-Ohne `DATABASE_URL` verwendet die App SQLite auf dem lokalen Streamlit-Dateisystem, das auf Community Cloud **nicht dauerhaft** ist. Für echte Persistenz muss eine externe PostgreSQL-Datenbank mit TLS eingerichtet werden.
-
-Es werden nur Abrechnungssummen, Bereitschaftsdaten und HMAC-basierte Versionsfingerprints gespeichert, **keine vollständigen Auftragsdaten**. Das ist bewusst eine eingeschränkte Archivfunktion und kein vollständiger wiederherstellbarer Auftragsbestand.
-
-## Funktionsgrenzen
-- Provisionsprüfung ist eine regelbasierte Plausibilitätskontrolle, keine verbindliche Prüfung.
-- Verdienst-Dashboard verwendet die aktuelle Abrechnung plus gespeicherte Aggregatwerte.
-- CSV-Vergleich zeigt neue/entfallene/geänderte Aufträge als **Anzahl**, keine alten Einzelauftragsdetails.
-- Bereitschaftskalender speichert markierte Freitage. Er importiert keine OnStreet-Daten automatisch.
-- Mobilansicht verbessert Abstände und Bedienelemente, ohne die bestehende Tabellenansicht vollständig zu ersetzen.
-- Login schützt den Zugriff, bietet aber noch **keine rollenbasierte Verwaltung** oder fein granularen Mitarbeiter-Datenzugriff. Im normalen App-Teil können erlaubte Personen weiterhin die hochgeladenen Fahrer auswählen.
+- Provisionsprüfung ist nur eine Plausibilitätsprüfung.
+- CSV-Diff zeigt Mengenänderungen, keine alten Einzelauftragsdetails.
+- Bereitschaftskalender merkt Termine und importiert OnStreet nicht automatisch.
+- Handyansicht verbessert die bestehenden Bedienflächen.
+- Ohne Zugangskontrolle kann jeder Besucher der App die aktuell geladenen Auftragsdaten sehen.
+- Vor Produktivbetrieb die Anwendung mit Beispiel-CSV und PostgreSQL testen.
 
 ## Tests
-`python -m unittest discover -p "test_*.py" -v` und Syntaxprüfung laufen in GitHub Actions. Vor Produktiveinsatz: mit Test-CSV und OIDC/PostgreSQL-Zugangsdaten End-to-End testen.
+
+`python -m unittest discover -p "test_*.py" -v`; GitHub Actions führt zudem eine Syntaxprüfung aus.
