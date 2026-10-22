@@ -18,6 +18,7 @@ import pandas as pd
 import streamlit as st
 from ki_assistent import render_ai_panel
 from provi_befehl import render_command_panel
+from fp_karte import render_fp_map
 
 # ============================================================
 # OPTIONALES PDF-MODUL
@@ -3019,6 +3020,8 @@ with right:
                             st.caption(f"OSM-Treffer: {order.get('target_display_name')}")
 
                     st.caption("Zonenregel: Einzelpunkt FP1 → FP2 → FP3. Für die gesamte Tour gewinnt anschließend die höhere Zone.")
+                    st.markdown("**🗺️ Festpreisgebiete auf der Karte**")
+                    render_fp_map(order, FP1_POINTS, FP2_POINTS, FP3_POINTS)
 
 # ============================================================
 # PROBLEMFÄLLE KOMPAKT
