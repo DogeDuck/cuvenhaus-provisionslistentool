@@ -170,3 +170,38 @@ def save(db_connection):
     if not result:
         raise BackupError("Automatisches Backup konnte nicht gespeichert werden.")
     return True
+
+def show_setup():
+    """Bequeme einmalige Einrichtung, ohne Code ausführen zu müssen."""
+    import streamlit as st
+    try:
+        ready = config() is not None
+    except BackupError as exc:
+        st.warning("Automatisches Backup noch nicht vollständig eingerichtet: " + str(exc))
+        ready = False
+    if ready:
+        st.session_state.pop("_backup_key_setup", None)
+        st.caption("🔐 Automatische verschlüsselte Sicherung ist konfiguriert.")
+        return
+    with st.expander("☁️ Kostenlose automatische Datensicherung einrichten"):
+        st.info("Auf Streamlit Community Cloud ist die lokale SQLite-Datei nicht dauerhaft. "
+                "Für automatische Wiederherstellung ein **privates GitHub-Repository** "
+                "und drei Secrets hinterlegen. Danach sind keine Downloads nötig.")
+        st.markdown("1. Unter [GitHub: Neues Repository](https://github.com/new) ein "
+                    "**privates** Backup-Repository erstellen.\n"
+                    "2. Einen [Fine-grained GitHub-Token]"
+                    "(https://github.com/settings/personal-access-tokens/new) "
+                    "nur für dieses Repository mit **Contents: Read and write** erstellen.\n"
+                    "3. In Streamlit unter **Settings → Secrets** die Werte eintragen.")
+        if st.button("🔑 Sicheren Verschlüsselungsschlüssel erzeugen",
+                     key="create_backup_secret"):
+            st.session_state["_backup_key_setup"] = Fernet.generate_key().decode("ascii")
+        if st.session_state.get("_backup_key_setup"):
+            st.code("BACKUP_ENCRYPTION_KEY = \"" +
+                    st.session_state["_backup_key_setup"] + "\"", language="toml")
+            st.caption("Einmal in Streamlit Secrets kopieren und zusätzlich sicher verwahren. "
+                       "Dieser Schlüssel darf nicht in GitHub veröffentlicht werden.")
+        st.code('GITHUB_BACKUP_REPO = "DEIN_GITHUBNAME/DEIN_PRIVATES_REPO"\n'
+                'GITHUB_BACKUP_TOKEN = "DEIN_TOKEN"', language="toml")
+        st.caption("Wichtig: Die Sicherung funktioniert erst, wenn alle drei "
+                   "Einträge in Streamlit Secrets gespeichert wurden.")
