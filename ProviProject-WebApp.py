@@ -2352,8 +2352,8 @@ if uploaded_file is not None:
                 orders = load_orders(db_month)
             finally:
                 db_month.close()
-            if db_month.backup_error:
-                st.session_state["month_backup_error"] = db_month.backup_error
+            if getattr(db_month, "backup_error", ""):
+                st.session_state["month_backup_error"] = getattr(db_month, "backup_error", "")
             else:
                 st.session_state.pop("month_backup_error", None)
         except Exception as exc:
@@ -2383,8 +2383,8 @@ if not st.session_state.orders:
             restored = load_orders(db_month)
         finally:
             db_month.close()
-        if db_month.backup_error:
-            st.session_state["month_backup_error"] = db_month.backup_error
+        if getattr(db_month, "backup_error", ""):
+            st.session_state["month_backup_error"] = getattr(db_month, "backup_error", "")
         if restored:
             st.session_state.orders = restored
             st.session_state.detected_drivers = sorted({
