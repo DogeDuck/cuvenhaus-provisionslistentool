@@ -17,6 +17,7 @@ from urllib.error import HTTPError, URLError
 import pandas as pd
 import streamlit as st
 from ki_assistent import render_ai_panel
+from provi_befehl import render_command_panel
 
 # ============================================================
 # OPTIONALES PDF-MODUL
@@ -3003,6 +3004,12 @@ if problem_orders:
 
 # Optionaler, schreibgeschützter KI-Bereich zur aktuellen Auswahl
 render_ai_panel(all_orders, provisioned_orders)
+
+
+render_command_panel(
+    all_orders, active_driver, driver_options, is_in_standby,
+    is_storno_order, calculate_adac_order, is_adac_order,
+)
 
 
 # ============================================================
