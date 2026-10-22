@@ -16,6 +16,7 @@ from urllib.error import HTTPError, URLError
 
 import pandas as pd
 import streamlit as st
+from ki_assistent import render_ai_panel
 
 # ============================================================
 # OPTIONALES PDF-MODUL
@@ -2998,6 +2999,10 @@ if problem_orders:
                 f"Start: {order.get('start') or '–'} | "
                 f"Ziel: {order.get('ziel') or '–'}"
             )
+
+
+# Optionaler, schreibgeschützter KI-Bereich zur aktuellen Auswahl
+render_ai_panel(all_orders, provisioned_orders)
 
 
 # ============================================================
