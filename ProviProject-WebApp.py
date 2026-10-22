@@ -2299,16 +2299,6 @@ def import_csv_bytes(raw_bytes):
 # HEADER / UPLOAD
 # ============================================================
 
-# Sobald eine Mitarbeiter-Whitelist eingerichtet ist, ist die ganze App geschützt.
-# Ohne konfigurierte Whitelist bleibt die bisherige App vorerst zugänglich.
-from cuvenhaus_suite import identity as _suite_identity, setting as _suite_setting
-if _suite_setting("ALLOWED_EMAILS"):
-    if not _suite_identity():
-        st.stop()
-else:
-    st.warning("⚠️ Mitarbeiter-Login noch nicht aktiviert. Für den produktiven Betrieb "
-               "ALLOWED_EMAILS und Streamlit OIDC konfigurieren.")
-
 st.title("🚜 Cuvenhaus Provisions-Manager")
 st.caption("Adresssuche: © OpenStreetMap contributors · Nominatim. Treffer werden lokal gecacht und nur bei Bedarf online gesucht.")
 
