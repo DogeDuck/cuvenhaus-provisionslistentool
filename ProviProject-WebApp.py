@@ -19,7 +19,7 @@ import streamlit as st
 from ki_assistent import render_ai_panel
 from provi_befehl import render_command_panel
 from fp_karte import render_fp_map
-from cuvenhaus_suite import render_suite, persistent
+from cuvenhaus_suite import render_suite
 from monatsarchiv import get_db as get_month_db, upsert_import, load_orders
 from zugang import require_access
 
@@ -2326,17 +2326,16 @@ if uploaded_file is not None:
             import_csv_bytes(raw)
         )
 
-        if persistent():
+        try:
+            db_month = get_month_db()
             try:
-                db_month = get_month_db()
-                try:
-                    st.session_state.month_import_result = upsert_import(db_month, orders.values())
-                    orders = load_orders(db_month)
-                finally:
-                    db_month.close()
-            except Exception:
-                st.error('Monatsdatenbank nicht erreichbar; CSV nicht gespeichert.')
-                st.stop()
+                st.session_state.month_import_result = upsert_import(db_month, orders.values())
+                orders = load_orders(db_month)
+            finally:
+                db_month.close()
+        except Exception as exc:
+            st.error('Monatsdaten konnten nicht sicher gespeichert werden: ' + str(exc))
+            st.stop()
         st.session_state.orders = orders
         st.session_state.detected_drivers = sorted({
             str(o.get('fahrer', '')).strip() for o in orders.values()
@@ -2354,7 +2353,7 @@ if uploaded_file is not None:
         st.rerun()
 
 
-if persistent() and not st.session_state.orders:
+if not st.session_state.orders:
     try:
         db_month = get_month_db()
         try:
@@ -2368,8 +2367,9 @@ if persistent() and not st.session_state.orders:
                 if str(o.get('fahrer', '')).strip()
             })
             st.session_state.file_hash = 'monatsarchiv'
-    except Exception:
-        st.warning('Monatsdatenbank konnte nicht geladen werden.')
+    except Exception as exc:
+        st.error('Monatsdatenbank oder automatische Sicherung konnte nicht geladen werden: ' + str(exc))
+        st.stop()
 
 if st.session_state.get('month_import_result'):
     stats = st.session_state.month_import_result
