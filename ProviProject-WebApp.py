@@ -19,7 +19,8 @@ import streamlit as st
 from ki_assistent import render_ai_panel
 from provi_befehl import render_command_panel
 from fp_karte import render_fp_map
-from cuvenhaus_suite import render_suite
+from cuvenhaus_suite import render_suite, persistent
+from monatsarchiv import get_db as get_month_db, upsert_import, load_orders
 
 # ============================================================
 # OPTIONALES PDF-MODUL
@@ -2322,8 +2323,22 @@ if uploaded_file is not None:
             import_csv_bytes(raw)
         )
 
+        if persistent():
+            try:
+                db_month = get_month_db()
+                try:
+                    st.session_state.month_import_result = upsert_import(db_month, orders.values())
+                    orders = load_orders(db_month)
+                finally:
+                    db_month.close()
+            except Exception:
+                st.error('Monatsdatenbank nicht erreichbar; CSV nicht gespeichert.')
+                st.stop()
         st.session_state.orders = orders
-        st.session_state.detected_drivers = drivers
+        st.session_state.detected_drivers = sorted({
+            str(o.get('fahrer', '')).strip() for o in orders.values()
+            if str(o.get('fahrer', '')).strip()
+        })
         st.session_state.file_hash = current_hash
 
         st.session_state.manual_added = set()
@@ -2335,6 +2350,27 @@ if uploaded_file is not None:
 
         st.rerun()
 
+
+if persistent() and not st.session_state.orders:
+    try:
+        db_month = get_month_db()
+        try:
+            restored = load_orders(db_month)
+        finally:
+            db_month.close()
+        if restored:
+            st.session_state.orders = restored
+            st.session_state.detected_drivers = sorted({
+                str(o.get('fahrer', '')).strip() for o in restored.values()
+                if str(o.get('fahrer', '')).strip()
+            })
+            st.session_state.file_hash = 'monatsarchiv'
+    except Exception:
+        st.warning('Monatsdatenbank konnte nicht geladen werden.')
+
+if st.session_state.get('month_import_result'):
+    stats = st.session_state.month_import_result
+    st.info(f"Monatsimport: {stats['neu']} neu · {stats['aktualisiert']} aktualisiert · {stats['unveraendert']} unverändert. Aufbewahrung: 90 Tage nach letztem Import.")
 
 if not st.session_state.orders:
     st.info(
