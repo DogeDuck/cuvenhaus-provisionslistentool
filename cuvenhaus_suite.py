@@ -153,19 +153,31 @@ def dashboard(orders, db, user):
 
 
 def calendar_panel(db, user):
-    st.subheader("🗓️ Bereitschaftskalender")
-    selected = st.date_input("Bereitschaftstag auswählen", value=date.today(), key="suite_shift_day")
-    fri = friday_for(selected).isoformat()
-    if st.button("Wochenende merken", key="suite_save_shift"):
-        db.execute("INSERT INTO shift_calendar(user_id,friday) VALUES(?,?) ON CONFLICT(user_id,friday) DO NOTHING", (user, fri))
-        st.success("Wochenende gespeichert.")
-    rows = db.execute("SELECT friday FROM shift_calendar WHERE user_id=? ORDER BY friday DESC LIMIT 100", (user,))
-    st.write(", ".join(r[0] for r in rows) if rows else "Noch keine Bereitschaften gespeichert.")
-    if rows:
-        chosen = st.selectbox("Gespeicherten Termin entfernen", [r[0] for r in rows], key="suite_remove_shift")
-        if st.button("Termin entfernen", key="suite_remove_shift_btn"):
-            db.execute("DELETE FROM shift_calendar WHERE user_id=? AND friday=?", (user, chosen))
-            st.rerun()
+    st.subheader('🗓️ Bereitschaftskalender')
+    month = st.date_input('Monat auswählen', value=date.today().replace(day=1), key='suite_calendar_month')
+    first = month.replace(day=1)
+    next_month = (first.replace(day=28) + timedelta(days=4)).replace(day=1)
+    fridays = []
+    cursor = friday_for(first)
+    while cursor < next_month:
+        if cursor.month == first.month:
+            fridays.append(cursor)
+        cursor += timedelta(days=7)
+    old_rows = db.execute('SELECT friday FROM shift_calendar WHERE user_id=?', (user,))
+    old = {x[0] for x in old_rows}
+    st.caption('Alle Wochenenden eines Monats auf einmal markieren und speichern.')
+    picked = []
+    for fri in fridays:
+        label = f"Fr {fri.strftime('%d.%m.')} bis So {(fri + timedelta(days=2)).strftime('%d.%m.')}"
+        if st.checkbox(label, value=fri.isoformat() in old, key='shift_' + user + fri.isoformat()):
+            picked.append(fri.isoformat())
+    if st.button('💾 Monatsbereitschaften speichern', key='suite_save_month'):
+        for fri in fridays:
+            db.execute('DELETE FROM shift_calendar WHERE user_id=? AND friday=?', (user, fri.isoformat()))
+        for fri in picked:
+            db.execute('INSERT INTO shift_calendar(user_id,friday) VALUES(?,?) ON CONFLICT(user_id,friday) DO NOTHING', (user, fri))
+        st.success(f'{len(picked)} Bereitschaftswochenenden gespeichert.')
+    st.caption('Gespeichert für: ' + user.replace('fahrer:', ''))
 
 
 def versions_panel(all_orders, source_hash, db, user):
