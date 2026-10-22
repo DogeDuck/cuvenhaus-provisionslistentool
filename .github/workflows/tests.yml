@@ -15,6 +15,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Compile all modules
-        run: python -m compileall -q ProviProject-WebApp.py cuvenhaus_suite.py ki_assistent.py provi_befehl.py fp_karte.py monatsarchiv.py
+        run: python -m compileall -q ProviProject-WebApp.py cuvenhaus_suite.py ki_assistent.py provi_befehl.py fp_karte.py monatsarchiv.py zugang.py
       - name: Unit tests
         run: python -m unittest discover -p "test_*.py" -v
