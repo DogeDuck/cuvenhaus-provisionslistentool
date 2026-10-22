@@ -242,11 +242,11 @@ def render_suite(all_orders, selected_orders, source_hash, driver, period):
             st.error(str(exc))
             return
         if backup_ready:
-            st.caption("SQLite lokal · Verschlüsseltes GitHub-Backup wird bei Änderungen automatisch gespeichert.")
+            st.caption("SQLite lokal · GitHub-Auto-Backup aktiviert (privat, komprimiert, NICHT verschlüsselt).")
         else:
             st.warning("⚠️ Nur lokale SQLite-Datei: Auf Streamlit Community Cloud können "
-                       "Daten jederzeit verloren gehen. Für automatisches Backup "
-                       "GITHUB_BACKUP_REPO, GITHUB_BACKUP_TOKEN und BACKUP_ENCRYPTION_KEY einrichten.")
+                       "Daten verloren gehen. Für automatische Wiederherstellung "
+                       "GITHUB_BACKUP_REPO und GITHUB_BACKUP_TOKEN in Secrets einrichten.")
 
         try:
             db = Storage()
