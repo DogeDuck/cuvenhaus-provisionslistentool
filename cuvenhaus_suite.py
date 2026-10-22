@@ -73,28 +73,9 @@ class Storage:
         self.conn.close()
 
 
-def identity():
-    """OIDC/SSO optional über Streamlit st.login; Secrets-Whitelist erforderlich."""
-    allowed = [x.strip().lower() for x in setting("ALLOWED_EMAILS").split(",") if x.strip()]
-    if not allowed:
-        st.warning("Mitarbeiter-Login noch nicht aktiviert: ALLOWED_EMAILS und Streamlit OIDC konfigurieren.")
-        return None
-    try:
-        if not st.user.is_logged_in:
-            st.info("Bitte anmelden, um die Mitarbeiterfunktionen zu verwenden.")
-            if st.button("🔐 Mit Firmenkonto anmelden", key="suite_login"):
-                st.login()
-            return None
-        email = str(st.user.get("email", "")).lower().strip()
-        if email not in allowed:
-            st.error("Dieses Konto ist nicht freigeschaltet.")
-            if st.button("Abmelden", key="suite_logout"):
-                st.logout()
-            return None
-        return email
-    except Exception:
-        st.warning("OIDC-Login ist noch nicht vollständig in den Streamlit-Secrets eingerichtet.")
-        return None
+def driver_key(driver):
+    """CSV-Fahrername als Zuordnung, ohne Login."""
+    return "fahrer:" + " ".join(str(driver).strip().casefold().split())
 
 
 def fingerprint(order, secret):
@@ -228,9 +209,11 @@ def versions_panel(all_orders, source_hash, db, user):
 def render_suite(all_orders, selected_orders, source_hash, driver, period):
     with st.expander("🧰 Cuvenhaus Manager 2.0 · Kontrolle & Historie", expanded=False):
         st.caption("Sichere Erweiterung: keine Änderung an bestehenden Tarifberechnungen.")
-        user = identity()
-        if not user:
+        if driver == "Alle Fahrer":
+            st.info("Bitte einen Fahrer aus dem CSV-Export auswählen.")
             return
+        user = driver_key(driver)
+        st.caption(f"Fahrer aus CSV: {driver} · Keine Anmeldung erforderlich.")
         if not persistent():
             st.warning("Nur lokales SQLite: Auf Streamlit Community Cloud NICHT dauerhaft! "
                        "Für dauerhafte Datenbank DATABASE_URL mit PostgreSQL konfigurieren.")
