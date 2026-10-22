@@ -16,13 +16,7 @@ from urllib.error import HTTPError, URLError
 
 import pandas as pd
 import streamlit as st
-from ki_assistent import render_ai_panel
-from provi_befehl import render_command_panel
-from fp_karte import render_fp_map
-from cuvenhaus_suite import render_suite
-from monatsarchiv import get_db as get_month_db, upsert_import, load_orders
 from zugang import require_access
-from autosicherung import show_setup as show_backup_setup
 
 # ============================================================
 # OPTIONALES PDF-MODUL
@@ -52,6 +46,17 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed",
 )
+
+# Passwortseite als Erstes anzeigen: keine App-/Datenbankinitialisierung davor.
+require_access()
+
+# Teurere App-Module erst nach erfolgreicher Zugangskontrolle importieren.
+from ki_assistent import render_ai_panel
+from provi_befehl import render_command_panel
+from fp_karte import render_fp_map
+from cuvenhaus_suite import render_suite
+from monatsarchiv import get_db as get_month_db, upsert_import, load_orders
+from autosicherung import show_setup as show_backup_setup
 
 st.markdown(
     """
@@ -2301,8 +2306,6 @@ def import_csv_bytes(raw_bytes):
 # ============================================================
 # HEADER / UPLOAD
 # ============================================================
-
-require_access()
 
 show_backup_setup()
 
