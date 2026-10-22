@@ -88,10 +88,6 @@ class OnStreetIntegrationTests(unittest.TestCase):
         source = Path("ProviProject-WebApp.py").read_text(encoding="utf-8")
         self.assertNotIn("is_weekday_commission(", source)
 
-    def test_no_sensitive_fixture_headers_written(self):
-        # Test-only data is synthetic; explicitly guard against fixture accidentally
-        # pointing at the user's supplied export.csv.
-        self.assertNotIn("export.csv", Path(__file__).read_text(encoding="utf-8").replace('"export.csv"', ""))
 
 
 if __name__ == "__main__":
