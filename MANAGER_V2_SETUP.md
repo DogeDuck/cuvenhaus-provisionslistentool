@@ -50,3 +50,22 @@ Es werden Abrechnungssummen, ausgewählte Fahrer, Bereitschaftsfreitage und HMAC
 - Die neue Monatsablage ist eine zusätzliche Funktion und sollte vor `main` mit realistischen, anonymisierten CSV-Mustern End-to-End geprüft werden.
 - Das Löschen nach 90 Tagen gilt für Einzeldatensätze und wird beim nächsten Zugriff ausgelöst. Datenbank-Backups haben eigene Fristen.
 - Eingangsdateien werden nicht dauerhaft als komplette Dateien gespeichert, sondern als normalisierte Auftragsdatensätze.
+
+
+## Einfacher Passwort-Screen (intern)
+
+In Streamlit Community Cloud unter **Settings → Secrets**:
+
+```toml
+INTERNAL_ACCESS_PIN = "HIER_DIE_INTERNE_ONSTREET_FIRMENNUMMER_EINTRAGEN"
+```
+
+Der Hinweis im Login-Fenster lautet exakt: **Onstreet Login Firmen-Nummer**. Das tatsächliche Passwort wird nicht in den öffentlichen GitHub-Code geschrieben. Ohne Secret blockiert die App den Zugriff. Eine kurze gemeinsame Nummer ist nur eine einfache Zugangshürde (kein individueller Benutzerzugang, kein Rate-Limit, keine echte Zugriffskontrolle pro Person). Für echte personenbezogene Auftragsdaten ist zusätzlich ein privater Betrieb / vorgeschalteter Zugriffsschutz zu empfehlen.
+
+## Provisionsregeln
+
+- Freitag 21:00 bis Sonntag 21:00: Bereitschaftszeitraum, alle nicht stornierten Aufträge des ausgewählten Fahrers können automatisch in die Provisionsauswahl übernommen werden.
+- Montag bis Freitag vor 21:00: nur Gutachten, Leihwagen und Reparatur werden anhand der CSV-Auftragsart/Tarif automatisch hinzugefügt. Die tatsächlichen Kategorienamen bitte mit dem Export abgleichen.
+- Überstunden und sonstige Sonderfälle bleiben jederzeit **manuell** über Kennzeichen oder Auftragsnummer hinzufügbar.
+- Bereits provisionierte Aufträge werden beim erneuten Hinzufügen nicht dupliziert. Ein sichtbarer Hinweis bestätigt das Ergebnis.
+- Die Zeitbasis des bisherigen CSV-Exports ist weiterhin die **Annahme** und muss geprüft werden, sobald ein Abschlusszeitpunkt vorhanden ist.
