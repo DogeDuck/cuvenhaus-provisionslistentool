@@ -31,3 +31,22 @@ Es werden Abrechnungssummen, ausgewählte Fahrer, Bereitschaftsfreitage und HMAC
 ## Tests
 
 `python -m unittest discover -p "test_*.py" -v`; GitHub Actions führt zudem eine Syntaxprüfung aus.
+
+
+## Monats-Workflow (neu)
+
+1. Ein Disponent importiert den vollständigen OnStreet-Monatsexport einmal.
+2. Mit externer PostgreSQL-Datenbank werden die Aufträge automatisch in einer gemeinsamen Tabelle `monthly_orders` gespeichert.
+3. Gleiche Auftragsnummer und unveränderter Inhalt werden als **Duplikat** erkannt; eine neue Version einer vorhandenen Auftragsnummer **aktualisiert** den Datensatz.
+4. Bei neuem Laden der App werden die gespeicherten Aufträge wiederhergestellt; Fahrer erscheinen automatisch aus dem Export.
+5. Der Bereitschaftskalender zeigt alle Freitage eines ausgewählten Monats als Checkboxen; Fahrer können mehrere Wochenenden auf einmal markieren.
+6. Auftragsdatensätze werden **90 Tage nach dem letzten Import** gelöscht, sobald die App wieder auf die Datenbank zugreift. Das ist kein zeitgenau laufender Hintergrund-Job. Abrechnungssummen und bereits bestehende Versionsfingerprints folgen noch keiner automatischen Löschregel.
+
+### Grenzen und Schutzmaßnahmen
+
+- Auftragsinhalte inklusive Kennzeichen, Einsatzadressen und Kundendaten landen in der **externen** Datenbank. Zugriff, Auftragsverarbeitung, Aufbewahrung und Löschfristen müssen vor produktivem Betrieb datenschutzrechtlich geprüft werden.
+- Ohne `DATABASE_URL` arbeitet die App wie bisher nur mit dem gerade hochgeladenen CSV; das Monatsarchiv ist **nicht** dauerhaft aktiv.
+- Die bestehende CSV-Importlogik verwendet als Zeitbasis die **Annahme**, soweit kein Abschlusszeitpunkt vorhanden ist.
+- Die neue Monatsablage ist eine zusätzliche Funktion und sollte vor `main` mit realistischen, anonymisierten CSV-Mustern End-to-End geprüft werden.
+- Das Löschen nach 90 Tagen gilt für Einzeldatensätze und wird beim nächsten Zugriff ausgelöst. Datenbank-Backups haben eigene Fristen.
+- Eingangsdateien werden nicht dauerhaft als komplette Dateien gespeichert, sondern als normalisierte Auftragsdatensätze.
