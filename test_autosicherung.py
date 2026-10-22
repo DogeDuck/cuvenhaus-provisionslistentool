@@ -1,4 +1,4 @@
-"""Mocked tests: encrypted backups never contact real GitHub."""
+"""Tests of keyless private-GitHub SQLite backups, with mocked HTTP."""
 import base64
 import os
 import sqlite3
@@ -6,21 +6,19 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from cryptography.fernet import Fernet
 import autosicherung
 
 
 class BackupTests(unittest.TestCase):
-    def test_encrypted_round_trip(self):
+    def test_backup_round_trip_without_encryption_key(self):
         with tempfile.TemporaryDirectory() as td:
             filename = os.path.join(td, "state.sqlite3")
             db = sqlite3.connect(filename)
             db.execute("CREATE TABLE monthly_orders (order_key TEXT)")
             db.execute("CREATE TABLE shift_calendar (user_id TEXT)")
             db.execute("CREATE TABLE billing_history (driver TEXT)")
-            db.execute("INSERT INTO monthly_orders VALUES (?)", ("EXAMPLE-SENSITIVE-123",))
+            db.execute("INSERT INTO monthly_orders VALUES (?)", ("EXAMPLE-123",))
             db.commit()
-            key = Fernet.generate_key().decode("ascii")
             remote = {"blob": None}
             def fake_request(repo, token, endpoint, method="GET", payload=None):
                 if endpoint == "":
@@ -29,33 +27,54 @@ class BackupTests(unittest.TestCase):
                     remote["blob"] = payload["content"]
                     return {"content": {"sha": "fake"}}
                 if endpoint.startswith("/contents/") and remote["blob"]:
-                    return {"encoding": "base64", "sha": "fake",
-                            "content": remote["blob"]}
+                    return {
+                        "encoding": "base64", "sha": "fake",
+                        "content": remote["blob"],
+                    }
                 return None
 
-            with patch.object(autosicherung, "config", return_value=("owner/private", "token", key)):
+            with patch.object(autosicherung, "config", return_value=("owner/private", "token")):
                 with patch.object(autosicherung, "_request", side_effect=fake_request):
                     self.assertTrue(autosicherung.save(db))
-                    self.assertNotIn("EXAMPLE-SENSITIVE-123", remote["blob"])
+                    self.assertTrue(remote["blob"])
+                    packed = base64.b64decode(remote["blob"])
+                    self.assertEqual(autosicherung._decode(packed)[:16], b"SQLite format 3\0")
                     db.close()
                     os.unlink(filename)
                     self.assertTrue(autosicherung.restore_if_missing(filename))
-                    restored = sqlite3.connect(filename)
-                    self.assertEqual(restored.execute("SELECT order_key FROM monthly_orders").fetchone(),
-                                     ("EXAMPLE-SENSITIVE-123",))
-                    restored.close()
+                    with sqlite3.connect(filename) as restored:
+                        self.assertEqual(
+                            restored.execute("SELECT order_key FROM monthly_orders").fetchone(),
+                            ("EXAMPLE-123",),
+                        )
 
-    def test_public_repository_is_rejected(self):
+    def test_private_repo_is_required(self):
         with patch.object(autosicherung, "_request", return_value={"private": False}):
             with self.assertRaises(autosicherung.BackupError):
                 autosicherung._repo_info("owner/public", "token")
 
-    def test_wrong_decryption_key_is_rejected(self):
-        first_key = Fernet.generate_key().decode("ascii")
-        wrong_key = Fernet.generate_key().decode("ascii")
-        ciphertext = Fernet(first_key.encode()).encrypt(b"secret")
-        with self.assertRaises(autosicherung.BackupError):
-            autosicherung._decode(ciphertext, wrong_key)
+    def test_corrupt_checksum_is_rejected(self):
+        raw = b"SQLite format 3\0" + b"x" * 5000
+        packed = bytearray(autosicherung._encode(raw))
+        packed[len(autosicherung.MAGIC)] ^= 1
+        with self.assertRaisesRegex(autosicherung.BackupError, "Prüfsumme"):
+            autosicherung._decode(bytes(packed))
+
+    def test_keyless_config(self):
+        with patch.dict(os.environ, {
+            "GITHUB_BACKUP_REPO": "owner/private",
+            "GITHUB_BACKUP_TOKEN": "test-token",
+            "BACKUP_ENCRYPTION_KEY": "unused-old-key",
+        }):
+            self.assertEqual(autosicherung.config(), ("owner/private", "test-token"))
+
+    def test_incomplete_config_rejected(self):
+        with patch.dict(os.environ, {
+            "GITHUB_BACKUP_REPO": "owner/private",
+            "GITHUB_BACKUP_TOKEN": "",
+        }):
+            with self.assertRaises(autosicherung.BackupError):
+                autosicherung.config()
 
 
 if __name__ == "__main__":
