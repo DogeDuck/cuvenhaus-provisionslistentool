@@ -22,6 +22,7 @@ from fp_karte import render_fp_map
 from cuvenhaus_suite import render_suite
 from monatsarchiv import get_db as get_month_db, upsert_import, load_orders
 from zugang import require_access
+from autosicherung import show_setup as show_backup_setup
 
 # ============================================================
 # OPTIONALES PDF-MODUL
@@ -2302,6 +2303,8 @@ def import_csv_bytes(raw_bytes):
 # ============================================================
 
 require_access()
+
+show_backup_setup()
 
 st.title("🚜 Cuvenhaus Provisions-Manager")
 st.caption("Adresssuche: © OpenStreetMap contributors · Nominatim. Treffer werden lokal gecacht und nur bei Bedarf online gesucht.")
