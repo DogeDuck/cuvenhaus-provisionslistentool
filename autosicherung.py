@@ -1,8 +1,8 @@
-"""Optional encrypted auto-backup of SQLite to a PRIVATE GitHub repository.
+"""Automatische SQLite-Sicherung ohne zusätzlichen Verschlüsselungsschlüssel.
 
-Only encrypted bytes ever leave the app. A private repository and narrowly
-scoped fine-grained PAT with Contents read/write are required. A local SQLite
-file alone is NOT durable on Streamlit Community Cloud.
+Die Datenbank wird KOMPRESSIERT, NICHT VERSCHLÜSSELT in einem PRIVATE GitHub
+Repository abgelegt. Jeder mit Repository-Zugriff kann die Daten lesen.
+Nie in einem öffentlichen Repository speichern.
 """
 import base64
 import hashlib
@@ -16,11 +16,10 @@ import urllib.parse
 import urllib.request
 import zlib
 
-from cryptography.fernet import Fernet, InvalidToken
-
-BACKUP_PATH = "cuvenhaus/monthly-state.fernet"
+BACKUP_PATH = "cuvenhaus/monthly-state.sqlite3.zlib"
 MAX_BACKUP = 12 * 1024 * 1024
 MAX_RAW = 65 * 1024 * 1024
+MAGIC = b"CUVENHAUS_SQLITE_BACKUP_V1\n"
 
 
 class BackupError(RuntimeError):
@@ -28,36 +27,38 @@ class BackupError(RuntimeError):
 
 
 def config():
+    """Zwei Secrets genügen: privates Repository und berechtigter Token."""
     def value(name):
         environment = os.environ.get(name, "")
         try:
             import streamlit as st
             return str(st.secrets.get(name, environment) or "").strip()
         except Exception:
-            # Beim lokalen Aufruf / Test fehlt secrets.toml möglicherweise.
-            return str(environment).strip()
+            # Ohne Streamlit-Secrets im lokalen Entwicklungs-/Testbetrieb.
+            return environment.strip()
+
     repo = value("GITHUB_BACKUP_REPO")
     token = value("GITHUB_BACKUP_TOKEN")
-    key = value("BACKUP_ENCRYPTION_KEY")
-    if not any((repo, token, key)):
+    if not repo and not token:
         return None
-    if not all((repo, token, key)):
-        raise BackupError("Automatische Sicherung unvollständig: GITHUB_BACKUP_REPO, GITHUB_BACKUP_TOKEN und BACKUP_ENCRYPTION_KEY erforderlich.")
-    if not re.fullmatch(r"[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+", repo):
-        raise BackupError("Ungültiger GitHub-Repositoryname.")
-    try:
-        Fernet(key.encode("ascii"))
-    except (ValueError, TypeError) as exc:
-        raise BackupError("BACKUP_ENCRYPTION_KEY muss ein gültiger Fernet-Schlüssel sein.") from exc
-    return repo, token, key
+    if not repo or not token:
+        raise BackupError(
+            "Für die automatische Sicherung GITHUB_BACKUP_REPO und "
+            "GITHUB_BACKUP_TOKEN in Streamlit Secrets setzen."
+        )
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
+        raise BackupError("Ungültiger Name des GitHub-Backup-Repositories.")
+    return repo, token
 
 
 def _request(repo, token, endpoint, method="GET", payload=None):
     url = "https://api.github.com/repos/" + repo + endpoint
-    headers = {"Authorization": "Bearer " + token,
-               "Accept": "application/vnd.github+json",
-               "X-GitHub-Api-Version": "2022-11-28",
-               "User-Agent": "Cuvenhaus-Manager-Backup"}
+    headers = {
+        "Authorization": "Bearer " + token,
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "Cuvenhaus-Manager-Backup",
+    }
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     if data is not None:
         headers["Content-Type"] = "application/json"
@@ -66,77 +67,109 @@ def _request(repo, token, endpoint, method="GET", payload=None):
         with urllib.request.urlopen(req, timeout=20) as response:
             return json.load(response)
     except urllib.error.HTTPError as exc:
-        if exc.code == 404:
+        if exc.code == 404 and method == "GET":
             return None
         if exc.code in (409, 422):
-            raise BackupError("GitHub-Sicherungskonflikt. Bitte Seite neu laden und erneut speichern.") from exc
-        raise BackupError("GitHub-Sicherung fehlgeschlagen (HTTP " + str(exc.code) + ").") from exc
+            raise BackupError(
+                "GitHub-Sicherungskonflikt. Die lokale Datenbank bleibt erhalten; "
+                "nicht gleichzeitig mit mehreren App-Instanzen sichern."
+            ) from exc
+        raise BackupError("GitHub-Backup fehlgeschlagen (HTTP %d)." % exc.code) from exc
     except (urllib.error.URLError, TimeoutError) as exc:
-        raise BackupError("GitHub ist für die automatische Sicherung nicht erreichbar.") from exc
+        raise BackupError("GitHub für automatische Sicherung nicht erreichbar.") from exc
 
 
 def _repo_info(repo, token):
     info = _request(repo, token, "")
     if not info:
-        raise BackupError("Privates GitHub-Backup-Repository nicht gefunden oder Token ohne Zugriff.")
-    if not info.get("private"):
-        raise BackupError("Backup abgelehnt: GitHub-Repository muss PRIVAT sein.")
+        raise BackupError("Backup-Repository nicht gefunden oder Token ohne Zugriff.")
+    if info.get("private") is not True:
+        raise BackupError(
+            "Sicherung abgelehnt: Das GitHub-Backup-Repository muss PRIVAT sein."
+        )
 
 
 def _remote_file(repo, token):
-    path = "/contents/" + urllib.parse.quote(BACKUP_PATH, safe="/")
-    obj = _request(repo, token, path)
-    if not obj:
+    endpoint = "/contents/" + urllib.parse.quote(BACKUP_PATH, safe="/")
+    obj = _request(repo, token, endpoint)
+    if obj is None:
         return None, None
     sha = obj.get("sha")
     encoded = obj.get("content")
     if not encoded or obj.get("encoding") != "base64":
+        if not sha:
+            raise BackupError("GitHub-Backup hat keine gültige Dateikennung.")
         blob = _request(repo, token, "/git/blobs/" + urllib.parse.quote(sha, safe=""))
         if not blob or blob.get("encoding") != "base64":
             raise BackupError("GitHub-Backup kann nicht gelesen werden.")
         encoded = blob["content"]
-    encrypted = base64.b64decode(encoded)
-    if len(encrypted) > MAX_BACKUP:
-        raise BackupError("Sicherung ist größer als das erlaubte Limit.")
-    return encrypted, sha
-
-
-def _decode(encrypted, key):
     try:
-        packed = Fernet(key.encode("ascii")).decrypt(encrypted)
-        inflater = zlib.decompressobj()
-        plain = inflater.decompress(packed, MAX_RAW + 1)
-        if len(plain) > MAX_RAW or not inflater.eof:
-            raise BackupError("Entpacktes Backup ist zu groß oder unvollständig.")
-        return plain
-    except (InvalidToken, zlib.error) as exc:
-        raise BackupError("Backup kann nicht entschlüsselt werden. Encryption-Key prüfen.") from exc
+        packed = base64.b64decode(encoded, validate=False)
+    except (ValueError, TypeError) as exc:
+        raise BackupError("GitHub-Backup enthält ungültige Dateidaten.") from exc
+    if len(packed) > MAX_BACKUP:
+        raise BackupError("Backup überschreitet das Größenlimit.")
+    return packed, sha
+
+
+def _encode(sqlite_bytes):
+    """Komprimierung und Prüfsumme, ausdrücklich KEINE Verschlüsselung."""
+    if len(sqlite_bytes) > MAX_RAW:
+        raise BackupError("Datenbank zu groß für GitHub-Backup.")
+    result = MAGIC + hashlib.sha256(sqlite_bytes).digest() + zlib.compress(sqlite_bytes, 6)
+    if len(result) > MAX_BACKUP:
+        raise BackupError("Komprimiertes Backup überschreitet 12 MB.")
+    return result
+
+
+def _decode(packed):
+    if not packed.startswith(MAGIC) or len(packed) < len(MAGIC) + 32:
+        raise BackupError("Unbekanntes Backupformat. Ein altes Fernet-Backup wird nicht gelesen.")
+    digest = packed[len(MAGIC):len(MAGIC) + 32]
+    compressed = packed[len(MAGIC) + 32:]
+    try:
+        decoder = zlib.decompressobj()
+        plain = decoder.decompress(compressed, MAX_RAW + 1)
+        if len(plain) > MAX_RAW or not decoder.eof or decoder.unused_data:
+            raise BackupError("Backup zu groß, beschädigt oder unvollständig.")
+    except zlib.error as exc:
+        raise BackupError("Backup konnte nicht entpackt werden.") from exc
+    if hashlib.sha256(plain).digest() != digest:
+        raise BackupError("Backup-Prüfsumme stimmt nicht. Wiederherstellung abgebrochen.")
+    return plain
 
 
 def restore_if_missing(path):
-    """Nur auf einem tatsächlich fehlenden SQLite-DB-Pfad wiederherstellen."""
+    """Vor dem Öffnen einer fehlenden SQLite-Datei aus GitHub wiederherstellen."""
     if os.path.exists(path) and os.path.getsize(path) > 0:
         return False
     cfg = config()
     if cfg is None:
         return False
-    repo, token, key = cfg
+    repo, token = cfg
     _repo_info(repo, token)
-    encrypted, _ = _remote_file(repo, token)
-    if encrypted is None:
+    packed, _ = _remote_file(repo, token)
+    if packed is None:
         return False
-    plain = _decode(encrypted, key)
+    plain = _decode(packed)
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, exist_ok=True)
-    fd, temp_path = tempfile.mkstemp(prefix=".cuvenhaus-restore-", suffix=".sqlite3", dir=directory)
+    fd, temp_path = tempfile.mkstemp(
+        prefix=".cuvenhaus-restore-", suffix=".sqlite3", dir=directory
+    )
     try:
         with os.fdopen(fd, "wb") as out:
             out.write(plain)
         with sqlite3.connect(temp_path) as check:
-            valid = check.execute("PRAGMA quick_check").fetchone()
-            tables = {row[0] for row in check.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        if valid != ("ok",) or not {"monthly_orders", "shift_calendar", "billing_history"}.issubset(tables):
-            raise BackupError("Backup enthält keine gültige Cuvenhaus-Datenbank.")
+            integrity = check.execute("PRAGMA quick_check").fetchone()
+            tables = {
+                row[0] for row in check.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+        expected = {"monthly_orders", "shift_calendar", "billing_history"}
+        if integrity != ("ok",) or not expected.issubset(tables):
+            raise BackupError("Backup ist keine gültige Cuvenhaus-SQLite-Datenbank.")
         os.replace(temp_path, path)
     finally:
         if os.path.exists(temp_path):
@@ -144,64 +177,71 @@ def restore_if_missing(path):
     return True
 
 
-def save(db_connection):
-    """Vollständige SQLite Momentaufnahme verschlüsselt ablegen."""
+def save(connection):
+    """Konsistenten SQLite-Snapshot automatisch in privates GitHub übertragen."""
     cfg = config()
     if cfg is None:
         return False
-    repo, token, key = cfg
-    # Aus einer konsistenten Snapshot-Verbindung serialisieren, kein WAL-Problem.
+    repo, token = cfg
     with sqlite3.connect(":memory:") as snapshot:
-        db_connection.backup(snapshot)
-        data = snapshot.serialize()
-    if len(data) > MAX_RAW:
-        raise BackupError("Datenbank zu groß für GitHub-Backup.")
-    encrypted = Fernet(key.encode("ascii")).encrypt(zlib.compress(data, level=6))
-    if len(encrypted) > MAX_BACKUP:
-        raise BackupError("Verschlüsseltes Backup größer als 12 MB.")
+        connection.backup(snapshot)
+        plain = snapshot.serialize()
+    packed = _encode(plain)
+    # Vor JEDER Übertragung das private Repository erneut prüfen.
     _repo_info(repo, token)
     _, sha = _remote_file(repo, token)
-    payload = {"message": "Update encrypted Cuvenhaus backup",
-               "content": base64.b64encode(encrypted).decode("ascii")}
+    payload = {
+        "message": "Update Cuvenhaus SQLite backup (private repo only)",
+        "content": base64.b64encode(packed).decode("ascii"),
+    }
     if sha:
         payload["sha"] = sha
-    result = _request(repo, token, "/contents/" + urllib.parse.quote(BACKUP_PATH, safe="/"),
-                      method="PUT", payload=payload)
+    result = _request(
+        repo, token, "/contents/" + urllib.parse.quote(BACKUP_PATH, safe="/"),
+        method="PUT", payload=payload
+    )
     if not result:
         raise BackupError("Automatisches Backup konnte nicht gespeichert werden.")
     return True
 
+
 def show_setup():
-    """Bequeme einmalige Einrichtung, ohne Code ausführen zu müssen."""
+    """Hinweise für die Einrichtung innerhalb der Passwort-geschützten App."""
     import streamlit as st
+
     try:
         ready = config() is not None
     except BackupError as exc:
-        st.warning("Automatisches Backup noch nicht vollständig eingerichtet: " + str(exc))
+        st.warning(str(exc))
         ready = False
+
     if ready:
-        st.session_state.pop("_backup_key_setup", None)
-        st.caption("🔐 Automatische verschlüsselte Sicherung ist konfiguriert.")
+        st.caption("☁️ GitHub-Auto-Backup konfiguriert (privat, komprimiert, nicht verschlüsselt).")
         return
-    with st.expander("☁️ Kostenlose automatische Datensicherung einrichten"):
-        st.info("Auf Streamlit Community Cloud ist die lokale SQLite-Datei nicht dauerhaft. "
-                "Für automatische Wiederherstellung ein **privates GitHub-Repository** "
-                "und drei Secrets hinterlegen. Danach sind keine Downloads nötig.")
-        st.markdown("1. Unter [GitHub: Neues Repository](https://github.com/new) ein "
-                    "**privates** Backup-Repository erstellen.\n"
-                    "2. Einen [Fine-grained GitHub-Token]"
-                    "(https://github.com/settings/personal-access-tokens/new) "
-                    "nur für dieses Repository mit **Contents: Read and write** erstellen.\n"
-                    "3. In Streamlit unter **Settings → Secrets** die Werte eintragen.")
-        if st.button("🔑 Sicheren Verschlüsselungsschlüssel erzeugen",
-                     key="create_backup_secret"):
-            st.session_state["_backup_key_setup"] = Fernet.generate_key().decode("ascii")
-        if st.session_state.get("_backup_key_setup"):
-            st.code("BACKUP_ENCRYPTION_KEY = \"" +
-                    st.session_state["_backup_key_setup"] + "\"", language="toml")
-            st.caption("Einmal in Streamlit Secrets kopieren und zusätzlich sicher verwahren. "
-                       "Dieser Schlüssel darf nicht in GitHub veröffentlicht werden.")
-        st.code('GITHUB_BACKUP_REPO = "DEIN_GITHUBNAME/DEIN_PRIVATES_REPO"\n'
-                'GITHUB_BACKUP_TOKEN = "DEIN_TOKEN"', language="toml")
-        st.caption("Wichtig: Die Sicherung funktioniert erst, wenn alle drei "
-                   "Einträge in Streamlit Secrets gespeichert wurden.")
+
+    with st.expander("☁️ Automatische Datensicherung einrichten"):
+        st.info(
+            "Die SQLite-Datei in Streamlit Community Cloud ist nicht dauerhaft. "
+            "Für automatisches Backup ein PRIVATES GitHub-Repository und zwei Secrets einrichten."
+        )
+        st.warning(
+            "Ohne Backup-Schlüssel gibt es keine Verschlüsselung. "
+            "Personen mit Zugriff auf das private Backup-Repository können "
+            "Kundenadressen, Kennzeichen und andere gespeicherte Daten auslesen."
+        )
+        st.markdown(
+            "1. Ein [privates GitHub-Repository](https://github.com/new) anlegen.\n"
+            "2. Einen [Fine-grained GitHub-Token]"
+            "(https://github.com/settings/personal-access-tokens/new) "
+            "nur für dieses Repository mit **Contents: Read and write** anlegen.\n"
+            "3. Unter **Streamlit → Settings → Secrets** nur diese zwei Werte setzen."
+        )
+        st.code(
+            'GITHUB_BACKUP_REPO = "DogeDuck/cuvenhaus-private-backup"\n'
+            'GITHUB_BACKUP_TOKEN = "DEIN_NEUER_GITHUB_TOKEN"',
+            language="toml",
+        )
+        st.caption(
+            "Kein BACKUP_ENCRYPTION_KEY nötig. Bereits im Chat geteilte Token "
+            "müssen widerrufen und ersetzt werden."
+        )
