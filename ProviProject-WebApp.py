@@ -2339,8 +2339,12 @@ if uploaded_file is not None:
                 orders = load_orders(db_month)
             finally:
                 db_month.close()
+            if db_month.backup_error:
+                st.session_state["month_backup_error"] = db_month.backup_error
+            else:
+                st.session_state.pop("month_backup_error", None)
         except Exception as exc:
-            st.error('Monatsdaten konnten nicht sicher gespeichert werden: ' + str(exc))
+            st.error('Lokale Monatsdatenbank konnte nicht gespeichert werden: ' + str(exc))
             st.stop()
         st.session_state.orders = orders
         st.session_state.detected_drivers = sorted({
@@ -2366,6 +2370,8 @@ if not st.session_state.orders:
             restored = load_orders(db_month)
         finally:
             db_month.close()
+        if db_month.backup_error:
+            st.session_state["month_backup_error"] = db_month.backup_error
         if restored:
             st.session_state.orders = restored
             st.session_state.detected_drivers = sorted({
@@ -2376,6 +2382,12 @@ if not st.session_state.orders:
     except Exception as exc:
         st.error('Monatsdatenbank oder automatische Sicherung konnte nicht geladen werden: ' + str(exc))
         st.stop()
+
+if st.session_state.get("month_backup_error"):
+    st.warning("⚠️ GitHub-Backup nicht erreichbar: "
+               + st.session_state["month_backup_error"]
+               + " Die CSV ist lokal gespeichert und kann bearbeitet werden. "
+               "Auf Streamlit Cloud ist sie damit noch nicht dauerhaft gesichert.")
 
 if st.session_state.get('month_import_result'):
     stats = st.session_state.month_import_result
