@@ -2,7 +2,7 @@
 
 ## Automatische Monatsablage
 
-Die App speichert OnStreet-Aufträge lokal in SQLite, erkennt beim Import doppelte Aufträge und aktualisiert Änderungen. Die bisherige automatische Auswahl, der Monatskalender und manuelles Hinzufügen bleiben erhalten.
+Die App speichert OnStreet-Aufträge lokal in SQLite, erkennt beim Import doppelte Aufträge und aktualisiert Änderungen. Die automatische Auswahl greift ausschließlich innerhalb der Bereitschaft (Freitag 21 Uhr bis Sonntag 21 Uhr). Außerhalb dieses Fensters werden Gutachten, Leihwagen, Werkstatt/Reparatur, Überstunden und zusätzliche Schleppaufträge nur manuell provisioniert. Der Monatskalender und die Auftragsuche bleiben erhalten.
 
 Auftragsdaten und alte Abrechnungen werden nach 90 Tagen beim nächsten Datenbankzugriff bereinigt. Das entfernt aber **keine alten GitHub-Versionen**.
 
@@ -46,3 +46,11 @@ Das vorhandene OPENAI_API_KEY-Secret unverändert lassen.
 Vor Übernahme in main muss ein Test mit anonymisierten OnStreet-Aufträgen und echter automatischer Wiederherstellung auf Streamlit Community Cloud erfolgreich sein. Automatisierte Unit-Tests simulieren die GitHub-Übertragung ohne Kundendaten.
 
 Testbefehl: python -m unittest discover -p "test_*.py" -v
+
+## Sicherheitskopie der bisherigen App
+
+Die vorherige main-Version wurde in GitHub unter dem Branch `backup/main-vor-manager-v2-2026-10-22` unverändert gesichert. Bei Problemen lässt sich der Hauptbranch auf diese Version zurückstellen, ohne die alte Anwendung zu verlieren.
+
+## Prüfung mit OnStreet-Datei (22.10.2026)
+
+Beim lokalen Strukturcheck des vom Anwender bereitgestellten Exports wurden 258 Datensätze mit 258 unterschiedlichen Auftragsnummern erfasst. Der Export enthält Datensätze vom 15.10.2026 bis 22.10.2026, also nicht den vollständigen Monat. Die Datei wurde **nicht** nach GitHub hochgeladen. Die kontinuierlichen GitHub-Tests verwenden nur künstliche CSV-Daten und simulierte GitHub-Backups; ein durchgehender Cloud-Test auf der Nutzerinstanz ist weiterhin notwendig.
