@@ -35,15 +35,14 @@ class SuiteTests(unittest.TestCase):
             original = os.getcwd()
             os.chdir(directory)
             try:
-                with patch.object(suite, "database_url", return_value=""):
-                    db = suite.Storage()
-                    try:
-                        db.execute("INSERT INTO shift_calendar(user_id,friday) VALUES(?,?)", ("test@example.org", "2026-10-16"))
-                        self.assertEqual(db.execute("SELECT friday FROM shift_calendar WHERE user_id=?", ("test@example.org",)), [("2026-10-16",)])
-                        db.execute("INSERT INTO billing_history(user_id,source_hash,driver,period,count,total,saved_at) VALUES(?,?,?,?,?,?,?)", ("test@example.org", "hash", "driver", "2026-10-16", 2, 55.0, "now"))
-                        self.assertEqual(db.execute("SELECT total FROM billing_history WHERE user_id=?", ("test@example.org",)), [(55.0,)])
-                    finally:
-                        db.close()
+                db = suite.Storage()
+                try:
+                    db.execute("INSERT INTO shift_calendar(user_id,friday) VALUES(?,?)", ("test@example.org", "2026-10-16"))
+                    self.assertEqual(db.execute("SELECT friday FROM shift_calendar WHERE user_id=?", ("test@example.org",)), [("2026-10-16",)])
+                    db.execute("INSERT INTO billing_history(user_id,source_hash,driver,period,count,total,saved_at) VALUES(?,?,?,?,?,?,?)", ("test@example.org", "hash", "driver", "2026-10-16", 2, 55.0, "now"))
+                    self.assertEqual(db.execute("SELECT total FROM billing_history WHERE user_id=?", ("test@example.org",)), [(55.0,)])
+                finally:
+                    db.close()
             finally:
                 os.chdir(original)
 
