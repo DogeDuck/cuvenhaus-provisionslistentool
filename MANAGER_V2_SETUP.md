@@ -1,53 +1,48 @@
-# Cuvenhaus Manager 2.0: kostenlos, lokal und automatisch gesichert
+# Cuvenhaus Manager 2.0: Speicherung ohne Backup-Schlüssel
 
-## Was passiert bei einem Monatsimport?
-1. Einmal OnStreet-CSV mit den Aufträgen eines Monats in der App hochladen.
-2. Aufträge werden in einer **lokalen SQLite-Datenbank** gespeichert, gemeinsam für die gerade laufende Streamlit-Instanz.
-3. Gleiche Auftragsnummern werden abgeglichen; neue Versionen aktualisieren die Einträge.
-4. Fahrer auswählen und die Bereitschaftsfreitage im einfachen Monatskalender markieren.
-5. Provisionslisten prüfen, bei Bedarf Überstunden manuell übernehmen, Abrechnung archivieren.
-6. Jede **Änderung an SQLite** löst beim Schließen der Datenbankverbindung ein automatisches, **verschlüsseltes GitHub-Backup** aus. Nach einem Neustart wird die lokale Datenbank aus diesem Backup restauriert, sofern sie fehlt.
+## Automatische Monatsablage
 
-**Keine PostgreSQL-Datenbank erforderlich.** Das SQLite-Backup ist nur automatisch und neustartfest, wenn ein privates GitHub-Backup-Repository und alle drei Backup-Secrets eingerichtet sind. Ohne diese Einrichtung arbeitet die App vorübergehend lokal; die Daten können bei Neustart/Neu-Deployment verloren gehen. Beim Backup-Fehler wird ein Fehler angezeigt.
+Die App speichert OnStreet-Aufträge lokal in SQLite, erkennt beim Import doppelte Aufträge und aktualisiert Änderungen. Die bisherige automatische Auswahl, der Monatskalender und manuelles Hinzufügen bleiben erhalten.
 
-## Einmalige Einrichtung des kostenlosen automatischen Backups
+Auftragsdaten und alte Abrechnungen werden nach 90 Tagen beim nächsten Datenbankzugriff bereinigt. Das entfernt aber **keine alten GitHub-Versionen**.
 
-1. Auf GitHub ein **neues privates Repository** anlegen, zum Beispiel `DogeDuck/cuvenhaus-private-backup`. **Nicht das öffentliche App-Repository verwenden**.
-2. Unter GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens einen Token erstellen, der **nur dieses private Repository** mit Berechtigung **Contents: Read and write** öffnen darf.
-3. Im Streamlit Community Cloud Dashboard → deine App → **Settings → Secrets** diese Werte eintragen:
+## Kostenlose automatische Sicherung ohne Verschlüsselung
 
-```toml
-INTERNAL_ACCESS_PIN = "DEINE_FIRMENNUMMER"
-GITHUB_BACKUP_REPO = "DEIN_GITHUBNAME/DEIN_PRIVATES_BACKUP_REPO"
-GITHUB_BACKUP_TOKEN = "DEIN_FEINGRANULARER_GITHUB_TOKEN"
-BACKUP_ENCRYPTION_KEY = "FERNET_URLSAFE_BASE64_KEY"
-```
+Ein zusätzlicher Verschlüsselungsschlüssel ist **nicht mehr erforderlich**. Die Sicherung wird komprimiert in einem **privaten** GitHub-Repository gespeichert. Diese Komprimierung schützt die Daten **nicht** vor fremden Zugriffen. Personen mit Zugang zum privaten Repo oder GitHub-Token können Kundendaten, Einsatzadressen und Kennzeichen auslesen.
 
-Der Encryption-Key ist ein **eigenständiger 32-Byte-Fernet-Schlüssel**, nicht die OnStreet-Nummer und nicht der GitHub-Token. Zum Erstellen (einmalig auf einem vertrauenswürdigen Rechner):
+Auf Streamlit Community Cloud ist der lokale Speicher flüchtig. Ohne externes Backup können Monatsaufträge beim Neustart verloren gehen.
 
-```sh
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-```
+## Einmalige Einrichtung
 
-**GitHub-Token und Encryption-Key niemals in GitHub-Code oder Chat veröffentlichen.** Den Encryption-Key sicher aufbewahren; bei Verlust kann die Sicherung nicht mehr entschlüsselt werden. Änderungen der Secrets im Streamlit-Dashboard können einen Neustart auslösen.
+1. Ein **privates** GitHub-Repository anlegen, etwa DogeDuck/cuvenhaus-private-backup.
+2. Einen NEUEN GitHub Fine-grained Token erzeugen, mit Zugriff nur auf dieses Repository und **Contents: Read and write**.
+3. In Streamlit Community Cloud unter Settings → Secrets diese Einstellungen ergänzen:
 
-## Datenschutz, Laufzeit und Löschfristen
+    INTERNAL_ACCESS_PIN = "DEINE_INTERNE_FIRMENNUMMER"
+    GITHUB_BACKUP_REPO = "DogeDuck/cuvenhaus-private-backup"
+    GITHUB_BACKUP_TOKEN = "DEIN_NEUER_TOKEN"
 
-- Die App nutzt lokal SQLite, aber für **zuverlässige automatische Wiederherstellung einen externen, kostenlosen GitHub-Backup-Speicher**. Vollständig innerhalb des flüchtigen Community-Cloud-Dateisystems ist das technisch nicht möglich.
-- GitHub akzeptiert für die Sicherung **nur ein privates Repository**. Die Datenbank wird **vor dem Upload mit Fernet verschlüsselt**. Die Schlüssel stehen ausschließlich in Streamlit Secrets.
-- Die aktiven Auftragsdatensätze werden **90 Tage nach dem letzten Import** beim nächsten Datenbankzugriff gelöscht; ebenfalls werden ältere Summenhistorien und alte Snapshot-Einträge bereinigt.
-- **Wichtige Einschränkung:** GitHub ist Versionsverwaltung. Ältere **verschlüsselte** Backup-Versionen können in der Commit-Historie länger als 90 Tage bestehen bleiben. Diese Lösung erfüllt daher **keine garantierte Löschung aller Backup-Versionen nach 90 Tagen**. Für strikte Löschfristen braucht es einen Backupspeicher mit eigener Retention-/Löschregel.
-- Gemeinsame fünfstellige Firmen-PIN ist kein vollwertiger Login. Der Zugriff auf echte personenbezogene Auftragsdaten muss betrieblich abgesichert werden; die Streamlit-App sollte nicht öffentlich erreichbar sein.
-- Automatische Sicherung erfolgt bei Änderungen an den SQLite-Tabellen (Monatsimporte, Bereitschaftskalender, historisierte Abrechnungen und Versionsstände). Laufende **manuelle Auswahlzustände** im Streamlit-Session-State sind noch nicht Teil des Backups.
-- Bei parallelen Nutzern können GitHub-Änderungskonflikte auftreten. Dann wird der Fehler angezeigt; eine bedingungslose Überschreibung der Sicherung wird vermieden.
-- GitHub Backupgröße: max. 12 MB verschlüsseltes Komprimat, SQLite unkomprimiert max. 65 MB. Bei Überschreitung erfolgt eine Fehlermeldung.
+Der frühere, im Chat öffentlich eingegebene GitHub-Token muss auf GitHub **widerrufen** werden. Niemals Token im Chat oder Repository veröffentlichen. Ein eventuell alter BACKUP_ENCRYPTION_KEY-Eintrag wird ignoriert und kann aus Secrets entfernt werden.
 
-## Provisionsregeln
-- Fr **21:00** bis So **21:00**: Bereitschaft, nicht stornierte Aufträge automatisch vorwählen.
-- Unter der Woche: nur **Gutachten, Leihwagen und Reparatur** automatisch übernehmen.
-- Überstunden und Ausnahmen lassen sich weiterhin **manuell** per Auftragssuche hinzufügen.
-- Ein Auftrag kann nicht doppelt provisioniert werden; deutliche Rückmeldung beim Hinzufügen.
-- **Zeitbasis**: Importdaten verwenden bisher den Annahmezeitpunkt, solange kein Abschlusszeitpunkt verfügbar ist.
+Das vorhandene OPENAI_API_KEY-Secret unverändert lassen.
 
-## Tests
-`python -m unittest discover -p "test_*.py" -v` und GitHub Actions prüfen SQLite, Duplikate, Fristen sowie verschlüsseltes Backup/Restore (mit simulierten GitHub-Antworten). Produktiver Streamlit-Test mit anonymisierten CSV-Daten ist vor Merge noch nötig.
+## Technische Eigenschaften
+
+- Kein PostgreSQL, kein Encryption-Key und keine zusätzliche Backup-App.
+- Nach SQLite-Änderungen wird der Datenbank-Snapshot automatisch komprimiert und nach GitHub geschrieben.
+- Vor JEDEM Upload wird geprüft, ob das Repository wirklich privat ist. Öffentliche Repositories werden abgelehnt.
+- Wenn die lokale Datei nach einem Neustart fehlt, stellt die App sie automatisch aus dem Backup wieder her.
+- Die Backup-Datei heißt cuvenhaus/monthly-state.sqlite3.zlib.
+- Der Wiederherstellungsprozess prüft Dateigröße, Prüfsumme und SQLite-Integrität.
+- Maximalgröße: 12 MB komprimiert und 65 MB unkomprimiert.
+- Ältere verschlüsselte .fernet-Backups sind mit dieser Version nicht kompatibel.
+- Bei einem GitHub-Konflikt oder Netzwerkfehler kann eine Sicherung fehlschlagen; ein Fehler wird angezeigt.
+- GitHub bewahrt alte Commit-Versionen auch nach 90 Tagen auf. Eine garantierte Datenlöschung ist damit NICHT umgesetzt.
+- Der gemeinsame fünfstellige Firmen-PIN ist kein ausreichender Schutz für sensible Personendaten.
+- Manuelle Provisionsauswahlen und Anpassungen im Streamlit-Session-State sind nicht vollständig Teil der DB.
+
+## Inbetriebnahme
+
+Vor Übernahme in main muss ein Test mit anonymisierten OnStreet-Aufträgen und echter automatischer Wiederherstellung auf Streamlit Community Cloud erfolgreich sein. Automatisierte Unit-Tests simulieren die GitHub-Übertragung ohne Kundendaten.
+
+Testbefehl: python -m unittest discover -p "test_*.py" -v
