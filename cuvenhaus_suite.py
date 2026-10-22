@@ -1,0 +1,265 @@
+"""Cuvenhaus Betriebs-Dashboard: datensparsame Historie, Prüfungen, Kalender und CSV-Vergleich.
+
+Datenspeicherung: SQLite lokal (nicht restartfest auf Community Cloud),
+PostgreSQL via DATABASE_URL für dauerhafte Speicherung. Keine Kundendaten
+in der Historie; Auftragskennungen nur als Hash mit privatem Secret.
+"""
+import hashlib
+import hmac
+import json
+import os
+import sqlite3
+from collections import Counter
+from datetime import date, datetime, timedelta
+from urllib.parse import urlparse
+
+import pandas as pd
+import streamlit as st
+
+
+def setting(name, default=""):
+    try:
+        return st.secrets.get(name, default) or os.environ.get(name, default)
+    except (FileNotFoundError, OSError):
+        return os.environ.get(name, default)
+
+
+def database_url():
+    return setting("DATABASE_URL")
+
+
+def persistent():
+    return database_url().startswith(("postgresql://", "postgres://"))
+
+
+class Storage:
+    def __init__(self):
+        self.remote = persistent()
+        if self.remote:
+            import psycopg
+            self.conn = psycopg.connect(database_url(), connect_timeout=8)
+        else:
+            self.conn = sqlite3.connect("cuvenhaus_local_v2.sqlite3", timeout=10)
+        self.init()
+
+    def execute(self, sql, args=()):
+        # SQL below is constant and only parameters contain user input.
+        with self.conn.cursor() if self.remote else self.conn as cur:
+            if self.remote:
+                cur.execute(sql.replace("?", "%s"), args)
+                return cur.fetchall() if sql.lstrip().upper().startswith("SELECT") else []
+            cur.execute(sql, args)
+            return cur.fetchall() if sql.lstrip().upper().startswith("SELECT") else []
+
+    def init(self):
+        self.execute("""CREATE TABLE IF NOT EXISTS shift_calendar (
+            user_id TEXT NOT NULL, friday TEXT NOT NULL,
+            PRIMARY KEY(user_id, friday))""")
+        self.execute("""CREATE TABLE IF NOT EXISTS billing_history (
+            user_id TEXT NOT NULL, source_hash TEXT NOT NULL,
+            driver TEXT NOT NULL, period TEXT NOT NULL,
+            count INTEGER NOT NULL, total REAL NOT NULL,
+            saved_at TEXT NOT NULL,
+            PRIMARY KEY(user_id, source_hash, driver, period))""")
+        self.execute("""CREATE TABLE IF NOT EXISTS import_snapshots (
+            user_id TEXT NOT NULL, source_hash TEXT NOT NULL,
+            saved_at TEXT NOT NULL, fingerprint_json TEXT NOT NULL,
+            PRIMARY KEY(user_id, source_hash))""")
+
+    def close(self):
+        self.conn.close()
+
+
+def identity():
+    """OIDC/SSO optional über Streamlit st.login; Secrets-Whitelist erforderlich."""
+    allowed = [x.strip().lower() for x in setting("ALLOWED_EMAILS").split(",") if x.strip()]
+    if not allowed:
+        st.warning("Mitarbeiter-Login noch nicht aktiviert: ALLOWED_EMAILS und Streamlit OIDC konfigurieren.")
+        return None
+    try:
+        if not st.user.is_logged_in:
+            st.info("Bitte anmelden, um die Mitarbeiterfunktionen zu verwenden.")
+            if st.button("🔐 Mit Firmenkonto anmelden", key="suite_login"):
+                st.login()
+            return None
+        email = str(st.user.get("email", "")).lower().strip()
+        if email not in allowed:
+            st.error("Dieses Konto ist nicht freigeschaltet.")
+            if st.button("Abmelden", key="suite_logout"):
+                st.logout()
+            return None
+        return email
+    except Exception:
+        st.warning("OIDC-Login ist noch nicht vollständig in den Streamlit-Secrets eingerichtet.")
+        return None
+
+
+def fingerprint(order, secret):
+    # Kein Kennzeichen oder Name speichern, ausschließlich HMAC einer Auftragskennung.
+    nr = str(order.get("nr", "")).strip()
+    if not nr:
+        return None
+    return hmac.new(secret.encode(), nr.encode(), hashlib.sha256).hexdigest()
+
+
+def signatures(orders):
+    secret = setting("HISTORY_HMAC_SECRET")
+    if not secret or len(secret) < 24:
+        return None
+    result = {}
+    for o in orders:
+        key = fingerprint(o, secret)
+        if key:
+            payload = {
+                "status": str(o.get("stat", "")),
+                "amount": round(float(o.get("betrag") or 0), 2),
+                "date": str(o.get("datum", "")),
+            }
+            # Keine Roh-Auftragsdaten persistieren.
+            result[key] = payload
+    return result
+
+
+def review(orders, manual_tariffs=None):
+    issues = []
+    seen = set()
+    for o in orders:
+        nr = str(o.get("nr", ""))
+        problems = []
+        if nr in seen:
+            problems.append("Doppelte Auftragsnummer in der Auswahl")
+        seen.add(nr)
+        if o.get("zone_warning"):
+            problems.append("FP-Zone / Adresse prüfen")
+        amount = float(o.get("betrag") or 0)
+        if amount < 0:
+            problems.append("Negativer Provisionsbetrag")
+        if amount == 0 and "storno" not in str(o.get("stat", "")).lower():
+            problems.append("0 € ohne eindeutigen Storno-Status")
+        if amount > 300:
+            problems.append("Ungewöhnlich hoher Einzelbetrag: Tarif prüfen")
+        if problems:
+            issues.append({"Auftrag": nr, "Hinweise": "; ".join(problems)})
+    return issues
+
+
+def friday_for(day):
+    return day - timedelta(days=(day.weekday() - 4) % 7)
+
+
+def dashboard(orders, db, user):
+    st.subheader("📊 Verdienst-Dashboard")
+    if orders:
+        df = pd.DataFrame([
+            {"Tag": str(o.get("datum", "")), "Betrag": float(o.get("betrag") or 0)}
+            for o in orders
+        ])
+        a, b, c = st.columns(3)
+        a.metric("Touren der Auswahl", len(df))
+        b.metric("Provision gesamt", f"{df['Betrag'].sum():.2f} €")
+        c.metric("Ø pro Tour", f"{df['Betrag'].mean():.2f} €")
+        st.bar_chart(df.groupby("Tag", as_index=True)["Betrag"].sum())
+    rows = db.execute(
+        "SELECT period, SUM(total), SUM(count) FROM billing_history WHERE user_id=? GROUP BY period ORDER BY period DESC LIMIT 20",
+        (user,),
+    )
+    if rows:
+        st.caption("Gespeicherte Abrechnungen")
+        st.dataframe(pd.DataFrame(rows, columns=["Zeitraum", "Provision €", "Touren"]), hide_index=True)
+
+
+def calendar_panel(db, user):
+    st.subheader("🗓️ Bereitschaftskalender")
+    selected = st.date_input("Bereitschaftstag auswählen", value=date.today(), key="suite_shift_day")
+    fri = friday_for(selected).isoformat()
+    if st.button("Wochenende merken", key="suite_save_shift"):
+        db.execute("INSERT INTO shift_calendar(user_id,friday) VALUES(?,?) ON CONFLICT(user_id,friday) DO NOTHING", (user, fri))
+        st.success("Wochenende gespeichert.")
+    rows = db.execute("SELECT friday FROM shift_calendar WHERE user_id=? ORDER BY friday DESC LIMIT 100", (user,))
+    st.write(", ".join(r[0] for r in rows) if rows else "Noch keine Bereitschaften gespeichert.")
+    if rows:
+        chosen = st.selectbox("Gespeicherten Termin entfernen", [r[0] for r in rows], key="suite_remove_shift")
+        if st.button("Termin entfernen", key="suite_remove_shift_btn"):
+            db.execute("DELETE FROM shift_calendar WHERE user_id=? AND friday=?", (user, chosen))
+            st.rerun()
+
+
+def versions_panel(all_orders, source_hash, db, user):
+    st.subheader("🔄 CSV-Versionsvergleich")
+    current = signatures(all_orders)
+    if current is None:
+        st.warning("Bitte HISTORY_HMAC_SECRET (mindestens 24 Zeichen) in Streamlit Secrets setzen.")
+        return
+    rows = db.execute(
+        "SELECT source_hash, saved_at, fingerprint_json FROM import_snapshots WHERE user_id=? ORDER BY saved_at DESC LIMIT 15",
+        (user,),
+    )
+    previous = [(h, ts, json.loads(blob)) for h, ts, blob in rows if h != source_hash]
+    if previous:
+        labels = [f"{ts} · {h[:10]}" for h, ts, _ in previous]
+        index = st.selectbox("Mit importierter Version vergleichen", range(len(labels)),
+                             format_func=lambda i: labels[i], key="suite_version_choice")
+        old = previous[index][2]
+        fresh = set(current) - set(old)
+        removed = set(old) - set(current)
+        changed = [k for k in set(current) & set(old) if current[k] != old[k]]
+        a, b, c = st.columns(3)
+        a.metric("Neue Aufträge", len(fresh))
+        b.metric("Entfallene Aufträge", len(removed))
+        c.metric("Status-/Betragsänderungen", len(changed))
+        st.caption("Vergleich auf Basis gehashter Auftragsnummern. "
+                   "Keine personenbezogenen Details der Altversion gespeichert.")
+    else:
+        st.info("Noch keine frühere CSV-Version gespeichert.")
+    if st.button("Aktuelle CSV-Version speichern", key="suite_save_version"):
+        db.execute(
+            "INSERT INTO import_snapshots(user_id,source_hash,saved_at,fingerprint_json) "
+            "VALUES(?,?,?,?) ON CONFLICT(user_id,source_hash) DO UPDATE SET "
+            "saved_at=excluded.saved_at, fingerprint_json=excluded.fingerprint_json",
+            (user, source_hash, datetime.now().isoformat(timespec="seconds"),
+             json.dumps(current, ensure_ascii=False)),
+        )
+        st.success("Versionsstand gespeichert.")
+
+
+def render_suite(all_orders, selected_orders, source_hash, driver, period):
+    with st.expander("🧰 Cuvenhaus Manager 2.0 · Kontrolle & Historie", expanded=False):
+        st.caption("Sichere Erweiterung: keine Änderung an bestehenden Tarifberechnungen.")
+        user = identity()
+        if not user:
+            return
+        if not persistent():
+            st.warning("Nur lokales SQLite: Auf Streamlit Community Cloud NICHT dauerhaft! "
+                       "Für dauerhafte Datenbank DATABASE_URL mit PostgreSQL konfigurieren.")
+        try:
+            db = Storage()
+        except Exception as exc:
+            st.error("Datenbank nicht erreichbar. Bitte DATABASE_URL prüfen.")
+            return
+        try:
+            tabs = st.tabs(["🔎 Provisionsprüfung", "📊 Dashboard", "🔄 CSV-Vergleich", "🗓️ Kalender"])
+            with tabs[0]:
+                issues = review(selected_orders)
+                st.metric("Auffällige Aufträge", len(issues))
+                if issues:
+                    st.dataframe(pd.DataFrame(issues), hide_index=True, use_container_width=True)
+                else:
+                    st.success("Keine Auffälligkeiten nach den vorhandenen Plausibilitätsregeln.")
+                if st.button("Aktuelle Abrechnung archivieren", key="suite_save_bill"):
+                    db.execute(
+                        "INSERT INTO billing_history(user_id,source_hash,driver,period,count,total,saved_at) "
+                        "VALUES(?,?,?,?,?,?,?) ON CONFLICT(user_id,source_hash,driver,period) "
+                        "DO UPDATE SET count=excluded.count,total=excluded.total,saved_at=excluded.saved_at",
+                        (user, source_hash, driver, period, len(selected_orders),
+                         sum(float(o.get("betrag") or 0) for o in selected_orders),
+                         datetime.now().isoformat(timespec="seconds")),
+                    )
+                    st.success("Abrechnungssumme archiviert.")
+            with tabs[1]:
+                dashboard(selected_orders, db, user)
+            with tabs[2]:
+                versions_panel(all_orders, source_hash, db, user)
+            with tabs[3]:
+                calendar_panel(db, user)
+        finally:
+            db.close()
