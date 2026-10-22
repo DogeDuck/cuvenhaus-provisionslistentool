@@ -124,7 +124,7 @@ NOMINATIM_USER_AGENT = (
 SUCCESS_TTL_SECONDS = 180 * 24 * 60 * 60
 NOT_FOUND_TTL_SECONDS = 24 * 60 * 60
 NOMINATIM_MIN_INTERVAL = 1.05
-ADDRESS_NORMALIZER_VERSION = "v4"
+ADDRESS_NORMALIZER_VERSION = "v5"
 
 GEOCODE_LOCK = threading.Lock()
 LAST_NOMINATIM_REQUEST = 0.0
@@ -866,6 +866,12 @@ def assess_geocode_result(cleaned, result, query_level=""):
     returned_hn = comparison_text(details.get("house_number", ""))
     house_ok = bool(requested_hn and returned_hn and requested_hn == returned_hn)
 
+    # Bekannte Widersprüche sind Ausschlusskriterien, keine bloß schlechtere Punktzahl.
+    if requested_hn and returned_hn and not house_ok:
+        return {"accepted": False, "score": 0, "quality": "unknown"}
+    if cleaned.get("postal_code") and details.get("postcode") and not postal_ok:
+        return {"accepted": False, "score": 0, "quality": "unknown"}
+
     locality_ok = postal_ok or city_ok or (not cleaned.get("city") and not cleaned.get("postal_code"))
 
     # Treffer in einem völlig anderen Ort nicht verwenden.
@@ -1109,6 +1115,34 @@ def point_in_polygon(lat, lon, polygon):
     return inside
 
 
+def boundary_distance_m(lat, lon, polygon):
+    """Abstand zur nächsten Polygonkante in Metern (lokale ebene Näherung)."""
+    import math
+    if not polygon or len(polygon) < 2:
+        return float("inf")
+    lat_scale = 111_320.0
+    lon_scale = lat_scale * math.cos(math.radians(lat))
+    best = float("inf")
+    for (a_lat, a_lon), (b_lat, b_lon) in zip(polygon, polygon[1:] + polygon[:1]):
+        ax = (a_lon - lon) * lon_scale
+        ay = (a_lat - lat) * lat_scale
+        bx = (b_lon - lon) * lon_scale
+        by = (b_lat - lat) * lat_scale
+        vx, vy = bx - ax, by - ay
+        length2 = vx * vx + vy * vy
+        t = max(0.0, min(1.0, -(ax * vx + ay * vy) / length2)) if length2 else 0.0
+        best = min(best, math.hypot(ax + t * vx, ay + t * vy))
+    return best
+
+
+def zone_boundary_warning(lat, lon):
+    """Bei nahen Grenzen keine vorgetäuschte hausnummerngenaue Sicherheit."""
+    if lat is None or lon is None:
+        return False
+    return any(boundary_distance_m(lat, lon, poly) < 150.0
+               for poly in (FP1_POINTS, FP2_POINTS, FP3_POINTS))
+
+
 def detect_zone_from_coordinates(lat, lon):
     if lat is None or lon is None:
         return None
@@ -1276,7 +1310,8 @@ def resolve_address_zone(address):
             quality = "estimated"
 
         if zone:
-            exact = quality == "exact"
+            near_boundary = zone_boundary_warning(geo["lat"], geo["lon"])
+            exact = quality == "exact" and not near_boundary
             return {
                 "zone": zone,
                 "source": "cache" if geo.get("cached") else "geocoding",
@@ -1284,7 +1319,9 @@ def resolve_address_zone(address):
                 "lat": geo["lat"], "lon": geo["lon"],
                 "warning": not exact,
                 "message": (
-                    "Adresse hausnummerngenau geocodiert"
+                    "Nahe FP-Grenze (unter 150 m); manuell auf Karte prüfen"
+                    if near_boundary
+                    else "Adresse hausnummerngenau geocodiert"
                     if exact
                     else "Straße/Ort geocodiert; Position ist näherungsweise"
                 ),
@@ -1431,7 +1468,9 @@ def calculate_adac_order(order, force=False):
     order["target_display_name"] = target_result.get("display_name", "")
 
     order["zone_warning"] = bool(
-        start_result.get("warning")
+        (start_address and not start_zone)
+        or (target_address and not target_zone)
+        or start_result.get("warning")
         or (
             target_address
             and target_result.get("warning")
