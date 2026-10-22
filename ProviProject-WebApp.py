@@ -21,6 +21,7 @@ from provi_befehl import render_command_panel
 from fp_karte import render_fp_map
 from cuvenhaus_suite import render_suite, persistent
 from monatsarchiv import get_db as get_month_db, upsert_import, load_orders
+from zugang import require_access
 
 # ============================================================
 # OPTIONALES PDF-MODUL
@@ -2300,6 +2301,8 @@ def import_csv_bytes(raw_bytes):
 # HEADER / UPLOAD
 # ============================================================
 
+require_access()
+
 st.title("🚜 Cuvenhaus Provisions-Manager")
 st.caption("Adresssuche: © OpenStreetMap contributors · Nominatim. Treffer werden lokal gecacht und nur bei Bedarf online gesucht.")
 
@@ -2512,10 +2515,8 @@ if (
         nr = order["nr"]
 
         if (
-            is_in_standby(
-                order,
-                selected_friday,
-            )
+            (is_in_standby(order, selected_friday)
+             or is_weekday_commission(order))
             and not is_storno_order(
                 order.get("stat", ""),
                 order.get("art", ""),
@@ -2534,6 +2535,21 @@ if (
     st.session_state.initialized_contexts.add(
         context_key
     )
+
+
+def is_weekday_commission(order):
+    """Wochentags nur die drei festgelegten Auftragsarten automatisch wählen."""
+    dt = order.get("dt")
+    if dt is None or dt.weekday() > 4:
+        return False
+    if dt.weekday() == 4 and dt.hour >= 21:
+        return False
+    text = normalize_search_text(
+        str(order.get("art", "")) + " " + str(order.get("tarif", ""))
+    )
+    return any(term in text for term in (
+        "gutachten", "leihwagen", "reparatur", "reperatur"
+    ))
 
 
 # ============================================================
@@ -2583,9 +2599,11 @@ with add_col:
         if len(search_matches) == 1:
             target = search_matches[0]
 
-            st.session_state.manual_added.add(
-                target["nr"]
-            )
+            if target["nr"] in st.session_state.manual_added and target["nr"] not in st.session_state.removed_orders:
+                st.session_state.add_result = ("info", target["nr"])
+            else:
+                st.session_state.manual_added.add(target["nr"])
+                st.session_state.add_result = ("success", target["nr"])
 
             st.session_state.removed_orders.discard(
                 target["nr"]
@@ -2593,6 +2611,13 @@ with add_col:
 
             st.rerun()
 
+
+if st.session_state.get("add_result"):
+    result_type, result_number = st.session_state.pop("add_result")
+    if result_type == "success":
+        st.success(f"✅ Auftrag {result_number} zur Provision hinzugefügt.", icon="✅")
+    else:
+        st.info(f"ℹ️ Auftrag {result_number} ist bereits provisioniert. Kein Doppler angelegt.")
 
 if search_input.strip():
     if not search_matches:
@@ -2647,9 +2672,11 @@ if search_input.strip():
         if st.button(
             "Ausgewählten Treffer übernehmen"
         ):
-            st.session_state.manual_added.add(
-                selected_match["nr"]
-            )
+            if selected_match["nr"] in st.session_state.manual_added and selected_match["nr"] not in st.session_state.removed_orders:
+                st.session_state.add_result = ("info", selected_match["nr"])
+            else:
+                st.session_state.manual_added.add(selected_match["nr"])
+                st.session_state.add_result = ("success", selected_match["nr"])
 
             st.session_state.removed_orders.discard(
                 selected_match["nr"]
