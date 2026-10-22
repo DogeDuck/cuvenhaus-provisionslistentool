@@ -2309,6 +2309,19 @@ def import_csv_bytes(raw_bytes):
 
 show_backup_setup()
 
+if st.button("🔎 Backup-Verbindung prüfen", key="backup_connection_check"):
+    from autosicherung import config, _repo_info, BackupError
+    try:
+        backup_config = config()
+        if backup_config is None:
+            st.warning("Backup-Einstellungen fehlen in Streamlit Secrets.")
+        else:
+            _repo_info(*backup_config)
+            st.success("✅ Privates GitHub-Repository erreichbar (Leserechte bestätigt).")
+    except BackupError as exc:
+        st.error("Backup nicht erreichbar: " + str(exc))
+        st.info("In GitHub beim Token unter Repository access das private Backup-Repository auswählen. Unter Contents die Berechtigung Read and write einstellen.")
+
 st.title("🚜 Cuvenhaus Provisions-Manager")
 st.caption("Adresssuche: © OpenStreetMap contributors · Nominatim. Treffer werden lokal gecacht und nur bei Bedarf online gesucht.")
 
