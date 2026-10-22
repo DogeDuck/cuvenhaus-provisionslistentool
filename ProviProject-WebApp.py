@@ -3009,6 +3009,7 @@ render_ai_panel(all_orders, provisioned_orders)
 render_command_panel(
     all_orders, active_driver, driver_options, is_in_standby,
     is_storno_order, calculate_adac_order, is_adac_order,
+    generate_pdf_bytes, HAS_REPORTLAB,
 )
 
 
