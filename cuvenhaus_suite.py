@@ -9,6 +9,7 @@ import hmac
 import json
 import os
 import sqlite3
+import autosicherung
 from collections import Counter
 from datetime import date, datetime, timedelta
 from urllib.parse import urlparse
@@ -33,6 +34,9 @@ class Storage:
     Achtung: Streamlit Community Cloud stellt keine dauerhaften Dateien bereit.
     """
     def __init__(self):
+        # Beim App-Neustart fehlende lokale DB automatisch aus privatem GitHub laden.
+        self.auto_restored = autosicherung.restore_if_missing(DB_PATH)
+        self._dirty = False
         self.conn = sqlite3.connect(DB_PATH, timeout=30)
         self.conn.execute("PRAGMA busy_timeout=30000")
         self.conn.execute("PRAGMA journal_mode=WAL")
@@ -42,7 +46,10 @@ class Storage:
     def execute(self, sql, args=()):
         with self.conn:
             cur = self.conn.execute(sql, args)
-            return cur.fetchall() if sql.lstrip().upper().startswith("SELECT") else []
+            result = cur.fetchall() if sql.lstrip().upper().startswith("SELECT") else []
+            if sql.lstrip().split(maxsplit=1)[0].upper() in ("INSERT", "UPDATE", "DELETE", "REPLACE") and cur.rowcount > 0:
+                self._dirty = True
+            return result
 
     def init(self):
         self.execute("""CREATE TABLE IF NOT EXISTS shift_calendar (
@@ -60,7 +67,11 @@ class Storage:
             PRIMARY KEY(user_id, source_hash))""")
 
     def close(self):
-        self.conn.close()
+        try:
+            if self._dirty:
+                autosicherung.save(self.conn)
+        finally:
+            self.conn.close()
 
 
 def prune_history(db, today=None):
@@ -225,9 +236,18 @@ def render_suite(all_orders, selected_orders, source_hash, driver, period):
             return
         user = driver_key(driver)
         st.caption(f"Fahrer aus CSV: {driver} · Keine Anmeldung erforderlich.")
-        st.caption("SQLite-Speicherung in der App. In Streamlit Community Cloud "
-                   "können Daten bei Neustart/Neu-Deployment verschwinden. "
-                   "Regelmäßig eine Sicherung herunterladen.")
+        try:
+            backup_ready = autosicherung.config() is not None
+        except autosicherung.BackupError as exc:
+            st.error(str(exc))
+            return
+        if backup_ready:
+            st.caption("SQLite lokal · Verschlüsseltes GitHub-Backup wird bei Änderungen automatisch gespeichert.")
+        else:
+            st.warning("⚠️ Nur lokale SQLite-Datei: Auf Streamlit Community Cloud können "
+                       "Daten jederzeit verloren gehen. Für automatisches Backup "
+                       "GITHUB_BACKUP_REPO, GITHUB_BACKUP_TOKEN und BACKUP_ENCRYPTION_KEY einrichten.")
+
         try:
             db = Storage()
             prune_history(db)
@@ -260,4 +280,7 @@ def render_suite(all_orders, selected_orders, source_hash, driver, period):
             with tabs[3]:
                 calendar_panel(db, user)
         finally:
-            db.close()
+            try:
+                db.close()
+            except autosicherung.BackupError as exc:
+                st.error("⚠️ Automatische Datensicherung fehlgeschlagen: " + str(exc))
