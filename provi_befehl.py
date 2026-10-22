@@ -62,7 +62,7 @@ def _csv(orders):
 
 def render_command_panel(all_orders, active_driver, driver_options,
                          is_in_standby, is_storno_order,
-                         calculate_adac_order, is_adac_order):
+                         calculate_adac_order, is_adac_order, generate_pdf_bytes, has_reportlab):
     with st.expander("🗣️ Provisionsliste per Text erstellen", expanded=False):
         st.caption(
             "Beispiel: 'Erstelle meine Provisionsliste für die Wochenenden "
@@ -143,6 +143,17 @@ def render_command_panel(all_orders, active_driver, driver_options,
              for o in selected],
             hide_index=True, use_container_width=True,
         )
+        if has_reportlab:
+            pdf_bytes = generate_pdf_bytes(
+                selected, result["driver"],
+                ", ".join(result["fridays"]),
+            )
+            st.download_button(
+                "📄 Provisionsliste als PDF herunterladen",
+                data=pdf_bytes, mime="application/pdf",
+                file_name="Provisionsliste_" + result["fridays"][0] + ".pdf",
+                key="provi_command_pdf",
+            )
         st.download_button(
             "💾 Provisionsliste als CSV herunterladen",
             data=_csv(selected), mime="text/csv",
