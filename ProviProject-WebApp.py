@@ -19,6 +19,10 @@ import streamlit as st
 from ki_assistent import render_ai_panel
 from provi_befehl import render_command_panel
 from fp_karte import render_fp_map
+from cuvenhaus_suite import render_suite
+from monatsarchiv import get_db as get_month_db, upsert_import, load_orders
+from zugang import require_access
+from autosicherung import show_setup as show_backup_setup
 
 # ============================================================
 # OPTIONALES PDF-MODUL
@@ -103,6 +107,12 @@ st.markdown(
 
     div[data-testid="stDataFrame"] {
         font-size: 12px;
+    }
+@media (max-width: 700px) {
+      .block-container { padding-left: .65rem; padding-right: .65rem; }
+      .stButton button { min-height: 44px; width: 100%; }
+      div[data-testid="stDataFrame"] { overflow-x: auto; }
+      h1 { font-size: 1.4rem !important; }
     }
 </style>
 """,
@@ -2292,6 +2302,10 @@ def import_csv_bytes(raw_bytes):
 # HEADER / UPLOAD
 # ============================================================
 
+require_access()
+
+show_backup_setup()
+
 st.title("🚜 Cuvenhaus Provisions-Manager")
 st.caption("Adresssuche: © OpenStreetMap contributors · Nominatim. Treffer werden lokal gecacht und nur bei Bedarf online gesucht.")
 
@@ -2315,8 +2329,21 @@ if uploaded_file is not None:
             import_csv_bytes(raw)
         )
 
+        try:
+            db_month = get_month_db()
+            try:
+                st.session_state.month_import_result = upsert_import(db_month, orders.values())
+                orders = load_orders(db_month)
+            finally:
+                db_month.close()
+        except Exception as exc:
+            st.error('Monatsdaten konnten nicht sicher gespeichert werden: ' + str(exc))
+            st.stop()
         st.session_state.orders = orders
-        st.session_state.detected_drivers = drivers
+        st.session_state.detected_drivers = sorted({
+            str(o.get('fahrer', '')).strip() for o in orders.values()
+            if str(o.get('fahrer', '')).strip()
+        })
         st.session_state.file_hash = current_hash
 
         st.session_state.manual_added = set()
@@ -2328,6 +2355,28 @@ if uploaded_file is not None:
 
         st.rerun()
 
+
+if not st.session_state.orders:
+    try:
+        db_month = get_month_db()
+        try:
+            restored = load_orders(db_month)
+        finally:
+            db_month.close()
+        if restored:
+            st.session_state.orders = restored
+            st.session_state.detected_drivers = sorted({
+                str(o.get('fahrer', '')).strip() for o in restored.values()
+                if str(o.get('fahrer', '')).strip()
+            })
+            st.session_state.file_hash = 'monatsarchiv'
+    except Exception as exc:
+        st.error('Monatsdatenbank oder automatische Sicherung konnte nicht geladen werden: ' + str(exc))
+        st.stop()
+
+if st.session_state.get('month_import_result'):
+    stats = st.session_state.month_import_result
+    st.info(f"Monatsimport: {stats['neu']} neu · {stats['aktualisiert']} aktualisiert · {stats['unveraendert']} unverändert. Aufbewahrung: 90 Tage nach letztem Import.")
 
 if not st.session_state.orders:
     st.info(
@@ -2469,10 +2518,7 @@ if (
         nr = order["nr"]
 
         if (
-            is_in_standby(
-                order,
-                selected_friday,
-            )
+            is_in_standby(order, selected_friday)
             and not is_storno_order(
                 order.get("stat", ""),
                 order.get("art", ""),
@@ -2498,6 +2544,7 @@ if (
 # ============================================================
 
 st.markdown("#### 🔎 Auftrag manuell hinzufügen")
+st.caption("Außerhalb der Bereitschaft: Gutachten, Leihwagen, Werkstatt, Überstunden und Schleppaufträge manuell auswählen.")
 
 search_col, add_col = st.columns(
     [5, 1]
@@ -2540,9 +2587,11 @@ with add_col:
         if len(search_matches) == 1:
             target = search_matches[0]
 
-            st.session_state.manual_added.add(
-                target["nr"]
-            )
+            if target["nr"] in st.session_state.manual_added and target["nr"] not in st.session_state.removed_orders:
+                st.session_state.add_result = ("info", target["nr"])
+            else:
+                st.session_state.manual_added.add(target["nr"])
+                st.session_state.add_result = ("success", target["nr"])
 
             st.session_state.removed_orders.discard(
                 target["nr"]
@@ -2550,6 +2599,13 @@ with add_col:
 
             st.rerun()
 
+
+if st.session_state.get("add_result"):
+    result_type, result_number = st.session_state.pop("add_result")
+    if result_type == "success":
+        st.success(f"✅ Auftrag {result_number} zur Provision hinzugefügt.", icon="✅")
+    else:
+        st.info(f"ℹ️ Auftrag {result_number} ist bereits provisioniert. Kein Doppler angelegt.")
 
 if search_input.strip():
     if not search_matches:
@@ -2604,9 +2660,11 @@ if search_input.strip():
         if st.button(
             "Ausgewählten Treffer übernehmen"
         ):
-            st.session_state.manual_added.add(
-                selected_match["nr"]
-            )
+            if selected_match["nr"] in st.session_state.manual_added and selected_match["nr"] not in st.session_state.removed_orders:
+                st.session_state.add_result = ("info", selected_match["nr"])
+            else:
+                st.session_state.manual_added.add(selected_match["nr"])
+                st.session_state.add_result = ("success", selected_match["nr"])
 
             st.session_state.removed_orders.discard(
                 selected_match["nr"]
@@ -3052,6 +3110,12 @@ render_command_panel(
     all_orders, active_driver, driver_options, is_in_standby,
     is_storno_order, calculate_adac_order, is_adac_order,
     generate_pdf_bytes, HAS_REPORTLAB,
+)
+
+
+render_suite(
+    all_orders, provisioned_orders, st.session_state.file_hash,
+    active_driver, str(selected_friday),
 )
 
 
