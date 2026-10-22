@@ -1,13 +1,13 @@
 """Monatsablage für OnStreet-Aufträge.
 
-Verwendet DATABASE_URL (PostgreSQL) für dauerhafte, gemeinsam genutzte Daten.
-Lokal nur SQLite zum Testen. Keine Original-CSV-Dateien speichern.
+Verwendet eine gemeinsame lokale SQLite-Datei der Streamlit-App.
+Regelmäßige Backups nötig, weil Community Cloud-Dateien flüchtig sind. Keine Original-CSV-Dateien speichern.
 """
 import hashlib
 import json
 from datetime import datetime, timedelta, date
 
-from cuvenhaus_suite import Storage, persistent, setting
+from cuvenhaus_suite import Storage, prune_history
 
 RETENTION_DAYS = 90
 FIELDS = ("nr", "raw_nr", "fahrer", "stat", "annahme", "datum", "zeit",
@@ -53,6 +53,7 @@ def upsert_import(db, orders, today=None):
     stats = {"neu": 0, "unveraendert": 0, "aktualisiert": 0, "ohne_id": 0}
     init_month_store(db)
     prune(db, today)
+    prune_history(db, today)
     for order in orders:
         key = _key(order)
         if not key:
@@ -78,6 +79,7 @@ def upsert_import(db, orders, today=None):
 def load_orders(db):
     init_month_store(db)
     prune(db)
+    prune_history(db)
     rows = db.execute("SELECT payload FROM monthly_orders ORDER BY updated_at")
     records = {}
     for (payload,) in rows:
