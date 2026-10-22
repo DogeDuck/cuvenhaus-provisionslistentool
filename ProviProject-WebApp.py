@@ -19,6 +19,7 @@ import streamlit as st
 from ki_assistent import render_ai_panel
 from provi_befehl import render_command_panel
 from fp_karte import render_fp_map
+from cuvenhaus_suite import render_suite
 
 # ============================================================
 # OPTIONALES PDF-MODUL
@@ -103,6 +104,12 @@ st.markdown(
 
     div[data-testid="stDataFrame"] {
         font-size: 12px;
+    }
+@media (max-width: 700px) {
+      .block-container { padding-left: .65rem; padding-right: .65rem; }
+      .stButton button { min-height: 44px; width: 100%; }
+      div[data-testid="stDataFrame"] { overflow-x: auto; }
+      h1 { font-size: 1.4rem !important; }
     }
 </style>
 """,
@@ -3052,6 +3059,12 @@ render_command_panel(
     all_orders, active_driver, driver_options, is_in_standby,
     is_storno_order, calculate_adac_order, is_adac_order,
     generate_pdf_bytes, HAS_REPORTLAB,
+)
+
+
+render_suite(
+    all_orders, provisioned_orders, st.session_state.file_hash,
+    active_driver, str(selected_friday),
 )
 
 
