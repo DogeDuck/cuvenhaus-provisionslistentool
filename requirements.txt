@@ -2,3 +2,4 @@ streamlit
 pandas
 reportlab
 pydeck>=0.9,<1.0
+psycopg[binary]>=3.2,<4
