@@ -28,11 +28,14 @@ class BackupError(RuntimeError):
 
 
 def config():
-    try:
-        import streamlit as st
-        value = lambda key: str(st.secrets.get(key, os.environ.get(key, ""))).strip()
-    except (FileNotFoundError, OSError):
-        value = lambda key: os.environ.get(key, "").strip()
+    def value(name):
+        environment = os.environ.get(name, "")
+        try:
+            import streamlit as st
+            return str(st.secrets.get(name, environment) or "").strip()
+        except Exception:
+            # Beim lokalen Aufruf / Test fehlt secrets.toml möglicherweise.
+            return str(environment).strip()
     repo = value("GITHUB_BACKUP_REPO")
     token = value("GITHUB_BACKUP_TOKEN")
     key = value("BACKUP_ENCRYPTION_KEY")
