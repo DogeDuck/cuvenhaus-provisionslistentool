@@ -34,8 +34,14 @@ class Storage:
     Achtung: Streamlit Community Cloud stellt keine dauerhaften Dateien bereit.
     """
     def __init__(self):
-        # Beim App-Neustart fehlende lokale DB automatisch aus privatem GitHub laden.
-        self.auto_restored = autosicherung.restore_if_missing(DB_PATH)
+        # Fehler beim Remote-Backup dürfen die lokale Auftragsbearbeitung nicht blockieren.
+        # Der Warnstatus bleibt sichtbar, bis die Verbindung funktioniert.
+        self.backup_error = ""
+        try:
+            self.auto_restored = autosicherung.restore_if_missing(DB_PATH)
+        except autosicherung.BackupError as exc:
+            self.auto_restored = False
+            self.backup_error = str(exc)
         self._dirty = False
         self.conn = sqlite3.connect(DB_PATH, timeout=30)
         self.conn.execute("PRAGMA busy_timeout=30000")
@@ -69,7 +75,13 @@ class Storage:
     def close(self):
         try:
             if self._dirty:
-                autosicherung.save(self.conn)
+                try:
+                    if autosicherung.save(self.conn):
+                        # Ein vorheriger fehlgeschlagener Wiederherstellungsversuch
+                        # darf nach erfolgreicher Sicherung nicht mehr warnen.
+                        self.backup_error = ""
+                except autosicherung.BackupError as exc:
+                    self.backup_error = str(exc)
         finally:
             self.conn.close()
 
@@ -251,6 +263,10 @@ def render_suite(all_orders, selected_orders, source_hash, driver, period):
         try:
             db = Storage()
             prune_history(db)
+            if db.backup_error:
+                st.warning("⚠️ Backup momentan nicht erreichbar. Die lokale Datenbank "
+                           "funktioniert weiter, ist auf Streamlit Cloud aber nicht dauerhaft. "
+                           + db.backup_error)
         except Exception:
             st.error("Lokale Datenbank konnte nicht geöffnet werden.")
             return
@@ -280,7 +296,7 @@ def render_suite(all_orders, selected_orders, source_hash, driver, period):
             with tabs[3]:
                 calendar_panel(db, user)
         finally:
-            try:
-                db.close()
-            except autosicherung.BackupError as exc:
-                st.error("⚠️ Automatische Datensicherung fehlgeschlagen: " + str(exc))
+            db.close()
+            if db.backup_error:
+                st.warning("⚠️ Automatische Datensicherung fehlgeschlagen. "
+                           "Änderungen liegen nur lokal: " + db.backup_error)
