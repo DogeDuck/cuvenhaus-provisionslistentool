@@ -44,11 +44,14 @@ class Storage:
 
     def execute(self, sql, args=()):
         # SQL below is constant and only parameters contain user input.
-        with self.conn.cursor() if self.remote else self.conn as cur:
-            if self.remote:
+        if self.remote:
+            with self.conn.cursor() as cur:
                 cur.execute(sql.replace("?", "%s"), args)
-                return cur.fetchall() if sql.lstrip().upper().startswith("SELECT") else []
-            cur.execute(sql, args)
+                rows = cur.fetchall() if sql.lstrip().upper().startswith("SELECT") else []
+            self.conn.commit()
+            return rows
+        with self.conn:
+            cur = self.conn.execute(sql, args)
             return cur.fetchall() if sql.lstrip().upper().startswith("SELECT") else []
 
     def init(self):
