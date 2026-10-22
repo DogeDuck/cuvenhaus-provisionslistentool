@@ -11,7 +11,7 @@ import streamlit as st
 def _configured_pin():
     try:
         return str(st.secrets.get("INTERNAL_ACCESS_PIN", "")).strip()
-    except (FileNotFoundError, OSError):
+    except Exception:
         return os.environ.get("INTERNAL_ACCESS_PIN", "").strip()
 
 
