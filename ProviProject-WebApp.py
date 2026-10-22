@@ -2518,8 +2518,7 @@ if (
         nr = order["nr"]
 
         if (
-            (is_in_standby(order, selected_friday)
-             or is_weekday_commission(order))
+            is_in_standby(order, selected_friday)
             and not is_storno_order(
                 order.get("stat", ""),
                 order.get("art", ""),
@@ -2540,26 +2539,12 @@ if (
     )
 
 
-def is_weekday_commission(order):
-    """Wochentags nur die drei festgelegten Auftragsarten automatisch wählen."""
-    dt = order.get("dt")
-    if dt is None or dt.weekday() > 4:
-        return False
-    if dt.weekday() == 4 and dt.hour >= 21:
-        return False
-    text = normalize_search_text(
-        str(order.get("art", "")) + " " + str(order.get("tarif", ""))
-    )
-    return any(term in text for term in (
-        "gutachten", "leihwagen", "reparatur", "reperatur"
-    ))
-
-
 # ============================================================
 # MANUELLE SUCHE
 # ============================================================
 
 st.markdown("#### 🔎 Auftrag manuell hinzufügen")
+st.caption("Außerhalb der Bereitschaft: Gutachten, Leihwagen, Werkstatt, Überstunden und Schleppaufträge manuell auswählen.")
 
 search_col, add_col = st.columns(
     [5, 1]
