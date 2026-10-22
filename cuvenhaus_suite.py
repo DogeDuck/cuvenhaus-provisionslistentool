@@ -1,7 +1,7 @@
 """Cuvenhaus Betriebs-Dashboard: datensparsame Historie, Prüfungen, Kalender und CSV-Vergleich.
 
 Datenspeicherung: SQLite lokal (nicht restartfest auf Community Cloud),
-PostgreSQL via DATABASE_URL für dauerhafte Speicherung. Keine Kundendaten
+Für Streamlit Community Cloud sind regelmäßige Backups nötig. Keine Kundendaten
 in der Historie; Auftragskennungen nur als Hash mit privatem Secret.
 """
 import hashlib
@@ -24,32 +24,22 @@ def setting(name, default=""):
         return os.environ.get(name, default)
 
 
-def database_url():
-    return setting("DATABASE_URL")
-
-
-def persistent():
-    return database_url().startswith(("postgresql://", "postgres://"))
+DB_PATH = os.environ.get("CUVENHAUS_SQLITE_PATH", "cuvenhaus_local_v2.sqlite3")
 
 
 class Storage:
+    """Gemeinsame lokale SQLite-Datei, kostenlos, ohne externen Dienst.
+
+    Achtung: Streamlit Community Cloud stellt keine dauerhaften Dateien bereit.
+    """
     def __init__(self):
-        self.remote = persistent()
-        if self.remote:
-            import psycopg
-            self.conn = psycopg.connect(database_url(), connect_timeout=8)
-        else:
-            self.conn = sqlite3.connect("cuvenhaus_local_v2.sqlite3", timeout=10)
+        self.conn = sqlite3.connect(DB_PATH, timeout=30)
+        self.conn.execute("PRAGMA busy_timeout=30000")
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA synchronous=NORMAL")
         self.init()
 
     def execute(self, sql, args=()):
-        # SQL below is constant and only parameters contain user input.
-        if self.remote:
-            with self.conn.cursor() as cur:
-                cur.execute(sql.replace("?", "%s"), args)
-                rows = cur.fetchall() if sql.lstrip().upper().startswith("SELECT") else []
-            self.conn.commit()
-            return rows
         with self.conn:
             cur = self.conn.execute(sql, args)
             return cur.fetchall() if sql.lstrip().upper().startswith("SELECT") else []
@@ -71,6 +61,15 @@ class Storage:
 
     def close(self):
         self.conn.close()
+
+
+def prune_history(db, today=None):
+    """90 Tage alte Historie und vergangene Bereitschaften entfernen."""
+    today = today or date.today()
+    cutoff = (today - timedelta(days=90)).isoformat()
+    db.execute("DELETE FROM billing_history WHERE saved_at < ?", (cutoff,))
+    db.execute("DELETE FROM import_snapshots WHERE saved_at < ?", (cutoff,))
+    db.execute("DELETE FROM shift_calendar WHERE friday < ?", (cutoff,))
 
 
 def driver_key(driver):
@@ -226,13 +225,14 @@ def render_suite(all_orders, selected_orders, source_hash, driver, period):
             return
         user = driver_key(driver)
         st.caption(f"Fahrer aus CSV: {driver} · Keine Anmeldung erforderlich.")
-        if not persistent():
-            st.warning("Nur lokales SQLite: Auf Streamlit Community Cloud NICHT dauerhaft! "
-                       "Für dauerhafte Datenbank DATABASE_URL mit PostgreSQL konfigurieren.")
+        st.caption("SQLite-Speicherung in der App. In Streamlit Community Cloud "
+                   "können Daten bei Neustart/Neu-Deployment verschwinden. "
+                   "Regelmäßig eine Sicherung herunterladen.")
         try:
             db = Storage()
-        except Exception as exc:
-            st.error("Datenbank nicht erreichbar. Bitte DATABASE_URL prüfen.")
+            prune_history(db)
+        except Exception:
+            st.error("Lokale Datenbank konnte nicht geöffnet werden.")
             return
         try:
             tabs = st.tabs(["🔎 Provisionsprüfung", "📊 Dashboard", "🔄 CSV-Vergleich", "🗓️ Kalender"])
