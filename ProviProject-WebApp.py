@@ -464,6 +464,17 @@ def _split_city_and_street_after_postcode(remainder):
         return "", ""
     idx = _street_start_index(remainder)
     if idx is None:
+        # Suffixless streets: "Wachtberg Zwischen den Hüllen 47".
+        tokens = remainder.split()
+        if (len(tokens) >= 4
+                and tokens[0].casefold() in {"wachtberg", "bonn", "bornheim",
+                    "alfter", "troisdorf", "siegburg", "niederkassel",
+                    "königswinter", "bad", "sankt"}
+                and re.fullmatch(r"\\d{1,4}[a-zA-Z]?", tokens[-1])):
+            city_words = 2 if tokens[0].casefold() in {"bad", "sankt"} else 1
+            if len(tokens) - city_words >= 3:
+                return (smart_city_name(" ".join(tokens[:city_words])),
+                        smart_street_name(" ".join(tokens[city_words:])))
         return smart_city_name(remainder), ""
     tokens = remainder.split()
     city = " ".join(tokens[:idx]).strip()
@@ -504,6 +515,8 @@ def clean_onstreet_address(raw):
     # "Bonner Talweg 287Thomas Steinseifer" -> "Bonner Talweg 287".
     # Nur die direkt an einer Hausnummer klebende Namensfolge abtrennen.
     text = re.sub(r"(\b\d{1,4}[a-z]?)(?=[A-ZÄÖÜ][a-zäöüß]{2,}(?:\s+[A-ZÄÖÜ][a-zäöüß]+)+)([A-ZÄÖÜ][a-zäöüß]+(?:\s+[A-ZÄÖÜ][a-zäöüß]+)+)", r"\1", text)
+    # Collapse identical adjacent house numbers, not legitimate number ranges.
+    text = re.sub(r"\\b(\\d{1,4}[a-zA-Z]?)\\s+\\1\\b", r"\\1", text, flags=re.I)
     parts = [re.sub(r"\s+", " ", p).strip(" ,") for p in text.split(",") if p.strip(" ,")]
 
     postal_code = ""
@@ -647,6 +660,8 @@ def street_name_variants(street):
 
     # Suffixe nur am Wortende ändern, damit z.B. 'Straßburger' nicht zerlegt wird.
     replacements = []
+    replacements.append(re.sub(r"(?i)\\bstr\\.?$", "Straße", street))
+    replacements.append(re.sub(r"(?i)\\bstr\\.?$", "Strasse", street))
     replacements.append(re.sub(r"(?i)(?:-|\s)str\.?\b", " Straße", street))
     replacements.append(re.sub(r"(?i)(?:-|\s)str\.?\b", " Strasse", street))
     replacements.append(re.sub(r"(?i)straße\b", "Strasse", street))
