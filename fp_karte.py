@@ -22,10 +22,16 @@ def render_fp_map(order, fp1, fp2, fp3):
         if lat is not None and lon is not None:
             markers.append({"name": label, "lat": float(lat), "lon": float(lon), "color": color})
     if not markers:
-        st.warning("Keine verwertbaren Koordinaten. Bitte zuerst die Adresse neu prüfen.")
-        return
-    lat = sum(m["lat"] for m in markers) / len(markers)
-    lon = sum(m["lon"] for m in markers) / len(markers)
+        st.warning(
+            "Für diesen Auftrag wurden keine Standortkoordinaten gefunden. "
+            "Die Karte zeigt deshalb nur die FP-Gebiete als Orientierung; "
+            "Start und Ziel werden NICHT als erfundene Punkte angezeigt. "
+            "Bei B42-/L5-Kennungen oder fehlerhaft verketteten Adressen "
+            "bitte die OnStreet-Adresse korrigieren bzw. die Zone manuell prüfen."
+        )
+    # Bonn als neutraler Kartenmittelpunkt, NICHT als Einsatzkoordinate.
+    lat = sum(m["lat"] for m in markers) / len(markers) if markers else 50.7374
+    lon = sum(m["lon"] for m in markers) / len(markers) if markers else 7.0982
     if len(markers) > 1:
         span = max(
             abs(markers[0]["lat"] - markers[1]["lat"]) * 111,

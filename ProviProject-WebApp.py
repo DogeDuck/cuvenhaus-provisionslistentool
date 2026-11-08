@@ -57,6 +57,7 @@ from fp_karte import render_fp_map
 from cuvenhaus_suite import render_suite
 from monatsarchiv import get_db as get_month_db, upsert_import, load_orders
 from autosicherung import show_setup as show_backup_setup
+from wochenlisten import available_weekends, in_billing_week, billing_week_bounds, get_scope, other_manual_weekend
 
 st.markdown(
     """
@@ -496,6 +497,10 @@ def clean_onstreet_address(raw):
     text = original.replace("\n", " ").replace("\r", " ")
     text = re.sub(r"\(\s*[A-ZÄÖÜ]{1,5}\s*\)", "", text)
     text = re.sub(r"\s+", " ", text).strip(" ,")
+    # OnStreet hängt manchmal Namen ohne Trennzeichen an Hausnummern:
+    # "Bonner Talweg 287Thomas Steinseifer" -> "Bonner Talweg 287".
+    # Nur die direkt an einer Hausnummer klebende Namensfolge abtrennen.
+    text = re.sub(r"(\b\d{1,4}[a-z]?)(?=[A-ZÄÖÜ][a-zäöüß]{2,}(?:\s+[A-ZÄÖÜ][a-zäöüß]+)+)([A-ZÄÖÜ][a-zäöüß]+(?:\s+[A-ZÄÖÜ][a-zäöüß]+)+)", r"\1", text)
     parts = [re.sub(r"\s+", " ", p).strip(" ,") for p in text.split(",") if p.strip(" ,")]
 
     postal_code = ""
@@ -2058,6 +2063,7 @@ DEFAULT_STATE = {
     "manual_zones": {},
     "manual_tariffs": {},
     "initialized_contexts": set(),
+    "weekend_scopes": {},
 }
 
 for key, default in DEFAULT_STATE.items():
@@ -2442,9 +2448,7 @@ for i, driver in enumerate(
         break
 
 
-top1, top2, top3 = st.columns(
-    [1.2, 1.6, 1.4]
-)
+top1, top2, top3 = st.columns([1.2, 1.8, 1.1])
 
 with top1:
     active_driver = st.selectbox(
@@ -2453,118 +2457,86 @@ with top1:
         index=default_driver_idx,
     )
 
-
+# Die Monatsdatei bleibt im Archiv. Für jede Wochenendliste werden NUR
+# Aufträge derselben Montag-Sonntag-Kalenderwoche berücksichtigt.
 driver_orders = [
-    order
-    for order in all_orders
+    o for o in all_orders
     if (
         active_driver == "Alle Fahrer"
-        or normalize_search_text(
-            active_driver
-        )
-        in normalize_search_text(
-            order.get("fahrer", "")
-        )
+        or normalize_search_text(active_driver)
+        in normalize_search_text(o.get("fahrer", ""))
     )
 ]
 
-
-weekends = detect_weekends_from_orders(
-    driver_orders
-)
-
-if not weekends:
-    default_friday = weekend_for_date(
-        date.today()
-    )
-    weekends = [default_friday]
-
+weekends = available_weekends(driver_orders)
 
 with top2:
-    weekend_options = {
-        weekend_label(friday): friday
-        for friday in weekends
-    }
-
-    selected_weekend_label = st.selectbox(
-        "📅 Bereitschaftswochenende",
-        list(weekend_options.keys()),
+    selected_friday = st.selectbox(
+        "📋 Provisionsliste / Wochenende",
+        weekends,
+        format_func=weekend_label,
+        key="weekend_list_choice",
+        help="Jedes Wochenende hat seine eigene Provisionsliste. "
+             "Die übrigen Tage der zugehörigen Woche kannst du manuell ergänzen.",
     )
 
-    selected_friday = weekend_options[
-        selected_weekend_label
-    ]
-
+week_orders = [o for o in driver_orders if in_billing_week(o, selected_friday)]
+all_week_orders = [o for o in all_orders if in_billing_week(o, selected_friday)]
+week_start, week_end = billing_week_bounds(selected_friday)
+standby_start, standby_end = standby_bounds(selected_friday)
 
 with top3:
-    calendar_day = st.date_input(
-        "Anderes Wochenende wählen",
-        value=selected_friday,
-        help=(
-            "Einen Tag auswählen. "
-            "Die App setzt automatisch das "
-            "zugehörige Bereitschaftswochenende."
-        ),
-    )
-
-    calendar_friday = weekend_for_date(
-        calendar_day
-    )
-
-    if calendar_friday != selected_friday:
-        selected_friday = calendar_friday
-
-
-standby_start, standby_end = (
-    standby_bounds(selected_friday)
-)
+    st.metric("Aufträge der Woche", len(week_orders))
 
 st.caption(
-    "Bereitschaft: "
-    f"{standby_start.strftime('%d.%m.%Y %H:%M')} "
-    "bis "
-    f"{standby_end.strftime('%d.%m.%Y %H:%M')} "
-    "· Zeitbasis dieses CSV: Annahme"
+    f"📋 Abrechnungswoche: {week_start.strftime('%d.%m.%Y')}–"
+    f"{(week_end - timedelta(days=1)).strftime('%d.%m.%Y')} "
+    f"· Bereitschaft: {standby_start.strftime('%d.%m. %H:%M')} "
+    f"bis {standby_end.strftime('%d.%m. %H:%M')} "
+    "· Zeitbasis: Annahme"
 )
 
+# Keine globale Auftragsauswahl mehr: manuell hinzugefügte/entfernte Aufträge
+# sowie Betrags- und Zonenänderungen gehören zu Fahrer UND Wochenende.
+weekend_scopes = st.session_state.weekend_scopes
+scope_id, current_scope = get_scope(weekend_scopes, active_driver, selected_friday)
+if st.session_state.get("active_week_scope") != scope_id:
+    st.session_state.active_week_scope = scope_id
+    st.session_state["add_result"] = None
+for field in ("manual_added", "removed_orders", "storno_orders",
+              "manual_zones", "manual_tariffs"):
+    st.session_state[field] = current_scope[field]
 
-# ============================================================
-# AUTOMATISCHE BEREITSCHAFT INITIALISIEREN
-# ============================================================
 
-context_key = (
-    f"{active_driver}|"
-    f"{selected_friday.isoformat()}|"
-    f"{st.session_state.file_hash}"
-)
-
-if (
-    context_key
-    not in st.session_state.initialized_contexts
-):
-    for order in driver_orders:
-        nr = order["nr"]
-
-        if (
-            is_in_standby(order, selected_friday)
-            and not is_storno_order(
-                order.get("stat", ""),
-                order.get("art", ""),
-                order.get("raw_nr", ""),
-                order.get("ag", ""),
-            )
-        ):
-            if (
-                nr
-                not in st.session_state.removed_orders
-            ):
-                st.session_state.manual_added.add(
-                    nr
-                )
-
-    st.session_state.initialized_contexts.add(
-        context_key
+def add_order_to_current_week(target):
+    """Immer nur in der aktuell ausgewählten Wochenendliste provisionieren."""
+    nr = target["nr"]
+    earlier = other_manual_weekend(
+        weekend_scopes, active_driver, selected_friday, nr
     )
+    if earlier is not None:
+        st.session_state.add_result = ("other_week", nr, earlier.strftime("%d.%m.%Y"))
+        return
+
+    automatic = (
+        belongs_to_active_driver(target)
+        and is_in_standby(target, selected_friday)
+        and not is_storno_order(
+            target.get("stat", ""), target.get("art", ""),
+            target.get("raw_nr", ""), target.get("ag", ""),
+        )
+    )
+    existing = (
+        (nr in st.session_state.manual_added or automatic)
+        and nr not in st.session_state.removed_orders
+    )
+    if existing:
+        st.session_state.add_result = ("info", nr)
+        return
+
+    st.session_state.manual_added.add(nr)
+    st.session_state.removed_orders.discard(nr)
+    st.session_state.add_result = ("success", nr, target.get("fahrer", ""))
 
 
 # ============================================================
@@ -2572,7 +2544,7 @@ if (
 # ============================================================
 
 st.markdown("#### 🔎 Auftrag manuell hinzufügen")
-st.caption("Außerhalb der Bereitschaft: Gutachten, Leihwagen, Werkstatt, Überstunden und Schleppaufträge manuell auswählen.")
+st.caption("Suche in ALLEN Aufträgen dieser Woche – auch wenn ein Kollege als Fahrer eingetragen ist. Gemeinsame Einsätze kannst du für dich manuell übernehmen; automatische Provision bleibt auf deinen Fahrer beschränkt.")
 
 search_col, add_col = st.columns(
     [5, 1]
@@ -2585,6 +2557,7 @@ with search_col:
             "z. B. 26945 oder SU-LC1517"
         ),
         label_visibility="collapsed",
+        key="week_order_search",
     )
 
 
@@ -2595,7 +2568,7 @@ if search_input.strip():
         search_input
     )
 
-    for order in all_orders:
+    for order in all_week_orders:
         haystack = normalize_search_text(
             f"{order.get('nr', '')} "
             f"{order.get('raw_nr', '')} "
@@ -2615,25 +2588,19 @@ with add_col:
         if len(search_matches) == 1:
             target = search_matches[0]
 
-            if target["nr"] in st.session_state.manual_added and target["nr"] not in st.session_state.removed_orders:
-                st.session_state.add_result = ("info", target["nr"])
-            else:
-                st.session_state.manual_added.add(target["nr"])
-                st.session_state.add_result = ("success", target["nr"])
-
-            st.session_state.removed_orders.discard(
-                target["nr"]
-            )
-
+            add_order_to_current_week(target)
             st.rerun()
 
 
 if st.session_state.get("add_result"):
-    result_type, result_number = st.session_state.pop("add_result")
+    result = st.session_state.pop("add_result")
+    result_type, result_number = result[:2]
     if result_type == "success":
-        st.success(f"✅ Auftrag {result_number} zur Provision hinzugefügt.", icon="✅")
+        st.success(f"✅ Auftrag {result_number} zu deiner Wochenendliste hinzugefügt. OnStreet-Fahrer: {result[2]}. Der Auftrag zählt jetzt in deiner Provisionssumme.")
+    elif result_type == "other_week":
+        st.warning(f"Auftrag {result_number} wurde bereits der Liste vom {result[2]} manuell zugeordnet. Keine doppelte Provision.")
     else:
-        st.info(f"ℹ️ Auftrag {result_number} ist bereits provisioniert. Kein Doppler angelegt.")
+        st.info(f"ℹ️ Auftrag {result_number} ist in dieser Liste bereits enthalten. Kein Doppler.")
 
 if search_input.strip():
     if not search_matches:
@@ -2645,9 +2612,17 @@ if search_input.strip():
     elif len(search_matches) == 1:
         match = search_matches[0]
 
+        automatic = (
+            belongs_to_active_driver(match)
+            and is_in_standby(match, selected_friday)
+            and not is_storno_order(
+                match.get("stat", ""), match.get("art", ""),
+                match.get("raw_nr", ""), match.get("ag", ""),
+            )
+        )
         already = (
-            match["nr"]
-            in st.session_state.manual_added
+            (match["nr"] in st.session_state.manual_added or automatic)
+            and match["nr"] not in st.session_state.removed_orders
         )
 
         st.caption(
@@ -2688,16 +2663,7 @@ if search_input.strip():
         if st.button(
             "Ausgewählten Treffer übernehmen"
         ):
-            if selected_match["nr"] in st.session_state.manual_added and selected_match["nr"] not in st.session_state.removed_orders:
-                st.session_state.add_result = ("info", selected_match["nr"])
-            else:
-                st.session_state.manual_added.add(selected_match["nr"])
-                st.session_state.add_result = ("success", selected_match["nr"])
-
-            st.session_state.removed_orders.discard(
-                selected_match["nr"]
-            )
-
+            add_order_to_current_week(selected_match)
             st.rerun()
 
 
@@ -2721,13 +2687,20 @@ def belongs_to_active_driver(order):
 
 provisioned_orders = []
 
-for order in all_orders:
+for order in all_week_orders:
     nr = order["nr"]
 
-    if not belongs_to_active_driver(order):
+    if not belongs_to_active_driver(order) and nr not in st.session_state.manual_added:
         continue
 
-    if nr not in st.session_state.manual_added:
+    # Nur dieses Wochenende automatisch, daneben explizite manuelle Aufträge.
+    if (nr not in st.session_state.manual_added
+            and not (belongs_to_active_driver(order)
+                     and is_in_standby(order, selected_friday)
+                     and not is_storno_order(order.get("stat", ""),
+                                             order.get("art", ""),
+                                             order.get("raw_nr", ""),
+                                             order.get("ag", "")))):
         continue
 
     if nr in st.session_state.removed_orders:
@@ -2899,19 +2872,26 @@ left, right = st.columns([0.82, 1.18], gap="large")
 # LINKS: ALLE AUFTRÄGE
 # ------------------------------------------------------------
 with left:
-    st.subheader("📥 Alle Aufträge")
+    st.subheader("📥 Aufträge dieser Abrechnungswoche")
     st.caption("✓ = bereits in der Provision. Weitere Touren kannst du oben per Nummer oder Kennzeichen hinzufügen.")
 
     left_orders = [
-        o for o in driver_orders
-        if (not only_problems or o.get("zone_warning"))
+        o for o in all_week_orders
+        if (belongs_to_active_driver(o) or o["nr"] in st.session_state.manual_added)
+        and (not only_problems or o.get("zone_warning"))
     ]
 
     left_rows = []
     for order in left_orders:
         nr = order["nr"]
         in_provision = (
-            nr in st.session_state.manual_added
+            (nr in st.session_state.manual_added
+             or (belongs_to_active_driver(order)
+                 and is_in_standby(order, selected_friday)
+                 and not is_storno_order(order.get("stat", ""),
+                                         order.get("art", ""),
+                                         order.get("raw_nr", ""),
+                                         order.get("ag", ""))))
             and nr not in st.session_state.removed_orders
         )
         standby = is_in_standby(order, selected_friday)
@@ -3131,11 +3111,11 @@ if problem_orders:
 
 
 # Optionaler, schreibgeschützter KI-Bereich zur aktuellen Auswahl
-render_ai_panel(all_orders, provisioned_orders)
+render_ai_panel(week_orders, provisioned_orders)
 
 
 render_command_panel(
-    all_orders, active_driver, driver_options, is_in_standby,
+    week_orders, active_driver, driver_options, is_in_standby,
     is_storno_order, calculate_adac_order, is_adac_order,
     generate_pdf_bytes, HAS_REPORTLAB,
 )
