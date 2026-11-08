@@ -1,7 +1,7 @@
 name: Cuvenhaus regression tests
 on:
   push:
-    branches: [main, feature/provision-suite-v2, fix/wochenendlisten-getrennt, feature/gemeinsame-einsaetze-fp-pruefer, perf/batch-standortdaten , ui/adac-dark-karten-filter-mobil]
+    branches: [main, feature/provision-suite-v2, fix/wochenendlisten-getrennt, feature/gemeinsame-einsaetze-fp-pruefer, perf/batch-standortdaten , ui/adac-dark-karten-filter-mobil, feature/provi-waechter-fp-kalender-csv]
   pull_request:
     branches: [main]
 jobs:
@@ -15,6 +15,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Compile all modules
-        run: python -m compileall -q ProviProject-WebApp.py cuvenhaus_suite.py ki_assistent.py provi_befehl.py fp_karte.py monatsarchiv.py zugang.py autosicherung.py wochenlisten.py provi_erweiterungen.py
+        run: python -m compileall -q ProviProject-WebApp.py cuvenhaus_suite.py ki_assistent.py provi_befehl.py fp_karte.py monatsarchiv.py zugang.py autosicherung.py wochenlisten.py provi_erweiterungen.py strassenkilometer.py csv_versionsvergleich.py provisions_waechter.py bereitschaftskalender.py
       - name: Unit tests
         run: python -m unittest discover -p "test_*.py" -v
