@@ -2477,6 +2477,7 @@ with top2:
     )
 
 week_orders = [o for o in driver_orders if in_billing_week(o, selected_friday)]
+all_week_orders = [o for o in all_orders if in_billing_week(o, selected_friday)]
 week_start, week_end = billing_week_bounds(selected_friday)
 standby_start, standby_end = standby_bounds(selected_friday)
 
@@ -2515,7 +2516,8 @@ def add_order_to_current_week(target):
         return
 
     automatic = (
-        is_in_standby(target, selected_friday)
+        belongs_to_active_driver(target)
+        and is_in_standby(target, selected_friday)
         and not is_storno_order(
             target.get("stat", ""), target.get("art", ""),
             target.get("raw_nr", ""), target.get("ag", ""),
@@ -2531,7 +2533,7 @@ def add_order_to_current_week(target):
 
     st.session_state.manual_added.add(nr)
     st.session_state.removed_orders.discard(nr)
-    st.session_state.add_result = ("success", nr)
+    st.session_state.add_result = ("success", nr, target.get("fahrer", ""))
 
 
 # ============================================================
@@ -2539,7 +2541,7 @@ def add_order_to_current_week(target):
 # ============================================================
 
 st.markdown("#### 🔎 Auftrag manuell hinzufügen")
-st.caption("Hier stehen nur Aufträge der gewählten Abrechnungswoche zur Auswahl. Gutachten, Leihwagen, Werkstatt, Überstunden und zusätzliche Schleppaufträge kannst du manuell ergänzen.")
+st.caption("Suche in ALLEN Aufträgen dieser Woche – auch wenn ein Kollege als Fahrer eingetragen ist. Gemeinsame Einsätze kannst du für dich manuell übernehmen; automatische Provision bleibt auf deinen Fahrer beschränkt.")
 
 search_col, add_col = st.columns(
     [5, 1]
@@ -2563,7 +2565,7 @@ if search_input.strip():
         search_input
     )
 
-    for order in week_orders:
+    for order in all_week_orders:
         haystack = normalize_search_text(
             f"{order.get('nr', '')} "
             f"{order.get('raw_nr', '')} "
@@ -2591,7 +2593,7 @@ if st.session_state.get("add_result"):
     result = st.session_state.pop("add_result")
     result_type, result_number = result[:2]
     if result_type == "success":
-        st.success(f"✅ Auftrag {result_number} zu dieser Wochenendliste hinzugefügt.")
+        st.success(f"✅ Auftrag {result_number} zu deiner Wochenendliste hinzugefügt. OnStreet-Fahrer: {result[2]}. Der Auftrag zählt jetzt in deiner Provisionssumme.")
     elif result_type == "other_week":
         st.warning(f"Auftrag {result_number} wurde bereits der Liste vom {result[2]} manuell zugeordnet. Keine doppelte Provision.")
     else:
@@ -2608,7 +2610,8 @@ if search_input.strip():
         match = search_matches[0]
 
         automatic = (
-            is_in_standby(match, selected_friday)
+            belongs_to_active_driver(match)
+            and is_in_standby(match, selected_friday)
             and not is_storno_order(
                 match.get("stat", ""), match.get("art", ""),
                 match.get("raw_nr", ""), match.get("ag", ""),
@@ -2681,15 +2684,16 @@ def belongs_to_active_driver(order):
 
 provisioned_orders = []
 
-for order in week_orders:
+for order in all_week_orders:
     nr = order["nr"]
 
-    if not belongs_to_active_driver(order):
+    if not belongs_to_active_driver(order) and nr not in st.session_state.manual_added:
         continue
 
     # Nur dieses Wochenende automatisch, daneben explizite manuelle Aufträge.
     if (nr not in st.session_state.manual_added
-            and not (is_in_standby(order, selected_friday)
+            and not (belongs_to_active_driver(order)
+                     and is_in_standby(order, selected_friday)
                      and not is_storno_order(order.get("stat", ""),
                                              order.get("art", ""),
                                              order.get("raw_nr", ""),
@@ -2869,8 +2873,9 @@ with left:
     st.caption("✓ = bereits in der Provision. Weitere Touren kannst du oben per Nummer oder Kennzeichen hinzufügen.")
 
     left_orders = [
-        o for o in week_orders
-        if (not only_problems or o.get("zone_warning"))
+        o for o in all_week_orders
+        if (belongs_to_active_driver(o) or o["nr"] in st.session_state.manual_added)
+        and (not only_problems or o.get("zone_warning"))
     ]
 
     left_rows = []
@@ -2878,7 +2883,8 @@ with left:
         nr = order["nr"]
         in_provision = (
             (nr in st.session_state.manual_added
-             or (is_in_standby(order, selected_friday)
+             or (belongs_to_active_driver(order)
+                 and is_in_standby(order, selected_friday)
                  and not is_storno_order(order.get("stat", ""),
                                          order.get("art", ""),
                                          order.get("raw_nr", ""),
