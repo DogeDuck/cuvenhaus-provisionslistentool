@@ -9,7 +9,7 @@ import autosicherung
 import cuvenhaus_suite
 from provi_erweiterungen import (
     claim, unclaim, claims_for, claimants, save_location, get_location,
-    validate_coords, audit, decisions, set_decision, prune,
+    validate_coords, audit, decisions, set_decision, prune, get_locations_bulk,
 )
 
 
@@ -58,6 +58,22 @@ class ExtensionsTests(unittest.TestCase):
             save_location(self.db, "Bad", float("nan"), 7.0)
         with self.assertRaises(ValueError):
             validate_coords(91, 7.0)
+
+    def test_bulk_locations_match_individual_lookups(self):
+        save_location(self.db, "Bonner Talweg 287", 50.70, 7.10)
+        save_location(self.db, "Bonn Hauptbahnhof", 50.73, 7.09)
+        names = ["Bonner Talweg 287", " BONNER  TALWEG 287 ",
+                 "Bonn Hauptbahnhof", "unbekannt", ""]
+        result = get_locations_bulk(self.db, names)
+        self.assertEqual(result["bonner talweg 287"],
+                         get_location(self.db, "Bonner Talweg 287"))
+        self.assertEqual(result["bonn hauptbahnhof"],
+                         get_location(self.db, "Bonn Hauptbahnhof"))
+        self.assertNotIn("unbekannt", result)
+        self.assertEqual(get_locations_bulk(self.db, []), {})
+        # More than one SQL parameter batch.
+        self.assertEqual(len(get_locations_bulk(
+            self.db, [f"unknown {i}" for i in range(450)])), 0)
 
     def test_review_status_persists(self):
         set_decision(self.db, "Can-Erik Ross", "28255", "zone", "Geprüft")
