@@ -43,6 +43,9 @@ def init_month_store(db):
 def prune(db, today=None):
     cutoff = (today or date.today()).isoformat()
     db.execute("DELETE FROM monthly_orders WHERE expires_at < ?", (cutoff,))
+    # Co-driver claims and audit statuses for expired jobs must not linger.
+    from provi_erweiterungen import prune as prune_provision_extensions
+    prune_provision_extensions(db)
 
 
 def upsert_import(db, orders, today=None):
