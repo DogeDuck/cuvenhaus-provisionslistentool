@@ -5,7 +5,9 @@ from datetime import date, timedelta
 def friday_for(value):
     if isinstance(value, str):
         value = date.fromisoformat(value)
-    return value + timedelta(days=(4 - value.weekday()) % 7)
+    return (value + timedelta(days=4 - value.weekday())
+            if value.weekday() <= 4
+            else value - timedelta(days=value.weekday() - 4))
 
 
 def init(db):
