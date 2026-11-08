@@ -3118,6 +3118,26 @@ with right:
         is_storno_manual = nr in st.session_state.storno_orders
 
         with st.container(border=True):
+            # Compact, readable status tags; actual values remain unchanged.
+            _card_tags = []
+            if nr in st.session_state.manual_added:
+                _card_tags.append(("Manuell", "ok"))
+            if not belongs_to_active_driver(order):
+                _card_tags.append(("Gemeinsamer Einsatz", "ok"))
+            if order.get("zone_warning"):
+                _card_tags.append(("FP prüfen", "warn"))
+            if is_storno_manual:
+                _card_tags.append(("Storno", "warn"))
+            if _card_tags:
+                st.markdown(
+                    '<div class="cuvenhaus-card-header">'
+                    + "".join(
+                        f'<span class="cuvenhaus-chip {css}">{html.escape(label)}</span>'
+                        for label, css in _card_tags
+                    )
+                    + '</div>',
+                    unsafe_allow_html=True,
+                )
             h1, h2, h3, h4 = st.columns([1.15, 1.0, 1.65, 0.85])
             with h1:
                 st.markdown(f"**#{nr}**")
