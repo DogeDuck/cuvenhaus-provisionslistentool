@@ -2316,6 +2316,8 @@ def import_csv_bytes(raw_bytes):
 
     orders = {}
     drivers = set()
+    _seen_csv_ids = set()
+    _duplicate_csv_ids = set()
 
     for row in rows[1:]:
         if not any(
@@ -2339,6 +2341,10 @@ def import_csv_bytes(raw_bytes):
             if nr_match
             else raw_nr.split()[0]
         )
+
+        if nr in _seen_csv_ids:
+            _duplicate_csv_ids.add(nr)
+        _seen_csv_ids.add(nr)
 
         stat = cell(row, idx_stat)
         fahrer = cell(row, idx_fahrer)
@@ -2416,6 +2422,7 @@ def import_csv_bytes(raw_bytes):
         if fahrer:
             drivers.add(fahrer)
 
+    st.session_state["_last_csv_duplicate_ids"] = sorted(_duplicate_csv_ids)
     return (
         orders,
         sorted(drivers),
@@ -2474,11 +2481,8 @@ if uploaded_file is not None:
             finally:
                 _snapshot_db.close()
         st.session_state["csv_version_diff"] = compare_versions(_previous, orders)
-        st.session_state["csv_import_duplicates"] = sorted(
-            nr for nr, count in __import__("collections").Counter(
-                str(o.get("nr") or "") for o in
-                [orders[n] for n in orders]
-            ).items() if count > 1
+        st.session_state["csv_import_duplicates"] = list(
+            st.session_state.get("_last_csv_duplicate_ids", ())
         )
 
         try:
@@ -2654,7 +2658,7 @@ with st.expander("📅 Bereitschaftskalender · Planung", expanded=False):
     _plan_date = st.date_input("Wochenende auswählen", value=selected_friday,
                                key="standby_plan_date")
     _plan_driver = st.selectbox("Fahrer einteilen",
-                                st.session_state.detected_drivers,
+                                st.session_state.detected_drivers or [""],
                                 key="standby_plan_driver")
     _plan_note = st.text_input("Notiz (optional)", key="standby_plan_note")
     _p1, _p2 = st.columns(2)
@@ -3436,6 +3440,19 @@ with right:
                                    "Die Karte zeigt dann die FP-Gebiete, nicht einen erfundenen Einsatzort.")
                     render_fp_map(order, FP1_POINTS, FP2_POINTS, FP3_POINTS)
 
+                    for _place_label, _raw_address in (
+                        ("Start", order.get("start", "")),
+                        ("Ziel", order.get("ziel", "")),
+                    ):
+                        _road = parse_road_reference(_raw_address)
+                        if _road:
+                            st.info(
+                                f"{_place_label}: {_road['label']} erkannt. "
+                                "Die Abschnittsnummer ist nicht verifiziert. "
+                                "Ohne amtliche Kilometrierungsdaten wird "
+                                "keine GPS-Position erfunden. "
+                                "Bitte eine geprüfte Position unten hinterlegen."
+                            )
                     st.markdown("**📌 Standort dauerhaft korrigieren**")
                     st.caption("Koordinaten als Dezimalgrad eingeben (z. B. aus Google Maps "
                                "oder OpenStreetMap). Die geprüfte Position wird für "
