@@ -2514,8 +2514,15 @@ def add_order_to_current_week(target):
         st.session_state.add_result = ("other_week", nr, earlier.strftime("%d.%m.%Y"))
         return
 
+    automatic = (
+        is_in_standby(target, selected_friday)
+        and not is_storno_order(
+            target.get("stat", ""), target.get("art", ""),
+            target.get("raw_nr", ""), target.get("ag", ""),
+        )
+    )
     existing = (
-        (nr in st.session_state.manual_added or is_in_standby(target, selected_friday))
+        (nr in st.session_state.manual_added or automatic)
         and nr not in st.session_state.removed_orders
     )
     if existing:
@@ -2600,8 +2607,15 @@ if search_input.strip():
     elif len(search_matches) == 1:
         match = search_matches[0]
 
+        automatic = (
+            is_in_standby(match, selected_friday)
+            and not is_storno_order(
+                match.get("stat", ""), match.get("art", ""),
+                match.get("raw_nr", ""), match.get("ag", ""),
+            )
+        )
         already = (
-            (match["nr"] in st.session_state.manual_added or is_in_standby(match, selected_friday))
+            (match["nr"] in st.session_state.manual_added or automatic)
             and match["nr"] not in st.session_state.removed_orders
         )
 
