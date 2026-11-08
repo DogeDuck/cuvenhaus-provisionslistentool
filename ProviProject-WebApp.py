@@ -2556,6 +2556,20 @@ for _o in all_week_orders:
 
 
 
+def belongs_to_active_driver(order):
+    if active_driver == "Alle Fahrer":
+        return True
+
+    return (
+        normalize_search_text(
+            active_driver
+        )
+        in normalize_search_text(
+            order.get("fahrer", "")
+        )
+    )
+
+
 def add_order_to_current_week(target):
     """Immer nur in der aktuell ausgewählten Wochenendliste provisionieren."""
     nr = target["nr"]
@@ -2734,20 +2748,6 @@ if search_input.strip():
 # ============================================================
 # PROVISIONIERTE AUFTRÄGE
 # ============================================================
-
-def belongs_to_active_driver(order):
-    if active_driver == "Alle Fahrer":
-        return True
-
-    return (
-        normalize_search_text(
-            active_driver
-        )
-        in normalize_search_text(
-            order.get("fahrer", "")
-        )
-    )
-
 
 provisioned_orders = []
 
