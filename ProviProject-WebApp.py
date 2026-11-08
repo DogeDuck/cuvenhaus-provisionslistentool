@@ -3163,6 +3163,99 @@ with right:
                     st.markdown("**🗺️ Festpreisgebiete auf der Karte**")
                     render_fp_map(order, FP1_POINTS, FP2_POINTS, FP3_POINTS)
 
+                    st.markdown("**📌 Standort dauerhaft korrigieren**")
+                    st.caption("Koordinaten als Dezimalgrad eingeben (z. B. aus Google Maps "
+                               "oder OpenStreetMap). Die geprüfte Position wird für "
+                               "dieselbe OnStreet-Adresse wiederverwendet.")
+                    for _which, _raw, _latkey, _lonkey in (
+                        ("start", order.get("start", ""), "start_lat", "start_lon"),
+                        ("ziel", order.get("ziel", ""), "target_lat", "target_lon"),
+                    ):
+                        if not _raw:
+                            continue
+                        with st.form(key=f"verified_coords_{scope_id}_{nr}_{_which}"):
+                            st.caption(f"{_which.upper()}: {_raw}")
+                            _ca, _cb = st.columns(2)
+                            with _ca:
+                                _lat_input = st.text_input("Breitengrad", value=str(order.get(_latkey) or ""),
+                                                           key=f"lat_{scope_id}_{nr}_{_which}")
+                            with _cb:
+                                _lon_input = st.text_input("Längengrad", value=str(order.get(_lonkey) or ""),
+                                                           key=f"lon_{scope_id}_{nr}_{_which}")
+                            _submitted = st.form_submit_button("📍 Position prüfen und speichern")
+                            if _submitted:
+                                try:
+                                    _lat = float(_lat_input.replace(",", "."))
+                                    _lon = float(_lon_input.replace(",", "."))
+                                    _db = get_month_db()
+                                    try:
+                                        save_location(_db, _raw, _lat, _lon)
+                                    finally:
+                                        _db.close()
+                                    st.session_state.verified_locations[
+                                        " ".join(_raw.casefold().split())
+                                    ] = (_lat, _lon)
+                                    order["geofence_checked"] = False
+                                    calculate_adac_order(order, force=True)
+                                    st.success("Position gespeichert, FP-Zone neu berechnet.")
+                                    st.rerun()
+                                except (ValueError, TypeError) as exc:
+                                    st.error("Ungültige Koordinaten: " + str(exc))
+                                except Exception as exc:
+                                    st.error("Standort konnte nicht gespeichert werden: " + str(exc))
+
+# ============================================================
+# PROVISIONSPRÜFER MIT DAUERHAFTEN ENTSCHEIDUNGEN
+# ============================================================
+
+if active_driver != "Alle Fahrer":
+    try:
+        _audit_db = get_month_db()
+        try:
+            _claim_map = {}
+            for _p in provisioned_orders:
+                _claim_map[_p["nr"]] = claimants(_audit_db, _p["nr"])
+            _saved_decisions = audit_decisions(_audit_db, active_driver)
+        finally:
+            _audit_db.close()
+        _findings = audit_commissions(
+            provisioned_orders,
+            standby_check=lambda o: is_in_standby(o, selected_friday),
+            manual_ids=st.session_state.manual_added,
+            claim_map=_claim_map,
+        )
+        _open_count = sum(1 for _nr, _code, _desc in _findings
+                          if _saved_decisions.get((_nr, _code), "Offen") == "Offen")
+        with st.expander(f"🛡️ Provisionsprüfer · {_open_count} offene Hinweise", expanded=False):
+            st.caption("Auffälligkeiten sind Hinweise, keine automatische Ablehnung. "
+                       "Manuelle Überstunden bleiben manuell freigegeben.")
+            if not _findings:
+                st.success("Keine Auffälligkeiten in dieser Wochenendliste.")
+            for _nr, _code, _desc in _findings[:80]:
+                _current = _saved_decisions.get((_nr, _code), "Offen")
+                _x, _y = st.columns([4, 2])
+                with _x:
+                    st.write(f"**#{_nr}** · {_desc}")
+                with _y:
+                    _new = st.selectbox(
+                        "Prüfstatus", ["Offen", "Geprüft", "Ignoriert"],
+                        index=["Offen", "Geprüft", "Ignoriert"].index(_current),
+                        key=f"audit_{scope_id}_{_nr}_{_code}",
+                        label_visibility="collapsed",
+                    )
+                    if _new != _current:
+                        _db = get_month_db()
+                        try:
+                            set_decision(_db, active_driver, _nr, _code, _new)
+                        finally:
+                            _db.close()
+                        st.rerun()
+            if len(_findings) > 80:
+                st.info(f"Es werden die ersten 80 von {len(_findings)} Hinweisen angezeigt.")
+    except Exception as exc:
+        st.warning("Provisionsprüfung momentan nicht verfügbar: " + str(exc))
+
+
 # ============================================================
 # PROBLEMFÄLLE KOMPAKT
 # ============================================================
