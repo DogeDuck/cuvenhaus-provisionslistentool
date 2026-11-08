@@ -59,7 +59,7 @@ from monatsarchiv import get_db as get_month_db, upsert_import, load_orders
 from autosicherung import show_setup as show_backup_setup
 from wochenlisten import available_weekends, in_billing_week, billing_week_bounds, get_scope, other_manual_weekend
 from provi_erweiterungen import (claim as save_codriver_claim, unclaim as remove_codriver_claim,
-    claims_for, claimants, save_location, get_location, audit as audit_commissions,
+    claims_for, claimants, save_location, get_locations_bulk, audit as audit_commissions,
     decisions as audit_decisions, set_decision, prune as prune_claims)
 
 st.markdown(
@@ -2525,13 +2525,11 @@ try:
     _claim_db = get_month_db()
     try:
         saved_claims = claims_for(_claim_db, active_driver) if active_driver != "Alle Fahrer" else set()
-        verified_locations = {}
-        for _o in all_week_orders:
-            for _address in (_o.get("start", ""), _o.get("ziel", "")):
-                if _address:
-                    _point = get_location(_claim_db, _address)
-                    if _point is not None:
-                        verified_locations[" ".join(_address.casefold().split())] = _point
+        verified_locations = get_locations_bulk(
+            _claim_db,
+            (_address for _o in all_week_orders
+             for _address in (_o.get("start", ""), _o.get("ziel", "")))
+        )
     finally:
         _claim_db.close()
 except Exception as _claim_error:
