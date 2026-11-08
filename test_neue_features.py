@@ -41,11 +41,11 @@ class NewFeatureTests(unittest.TestCase):
         db = sqlite3.connect(":memory:")
         try:
             friday = assign(db, date(2026, 11, 7), "Can-Erik", "WE")
-            self.assertEqual(friday, "2026-11-13")
-            assign(db, date(2026, 11, 13), "Sebastian")
+            self.assertEqual(friday, "2026-11-06")
+            assign(db, date(2026, 11, 6), "Sebastian")
             self.assertEqual(len(assignments(db)), 2)
-            self.assertIn("2026-11-13", overlaps(assignments(db)))
-            unassign(db, date(2026, 11, 13), "Sebastian")
+            self.assertIn("2026-11-06", overlaps(assignments(db)))
+            unassign(db, date(2026, 11, 6), "Sebastian")
             self.assertEqual(overlaps(assignments(db)), {})
             self.assertEqual(friday_for(date(2026, 11, 9)), date(2026, 11, 13))
         finally:
