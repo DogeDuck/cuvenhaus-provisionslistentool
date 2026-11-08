@@ -101,6 +101,63 @@ st.markdown(
         min-height: 2.2rem;
     }
 
+    /* Cuvenhaus ADAC Dark: visuals only, never business logic. */
+    .stApp {
+        background: #0c111b;
+        color: #e9edf5;
+    }
+    .block-container { max-width: 1540px; }
+    h1, h2, h3 { color: #f8fafc !important; }
+    [data-testid="stMetric"] {
+        background: #172130;
+        border: 1px solid #293547;
+        border-radius: 14px;
+        padding: 12px 16px !important;
+    }
+    [data-testid="stMetricValue"] { color: #ffcc00; }
+    [data-testid="stVerticalBlockBorderWrapper"] > div {
+        border-color: #344052 !important;
+        border-radius: 14px !important;
+    }
+    .stButton button[kind="primary"] {
+        background: #ffcc00;
+        color: #101820;
+        border-color: #ffcc00;
+        font-weight: 700;
+    }
+    .stButton button:focus-visible, input:focus-visible {
+        outline: 2px solid #ffcc00;
+        outline-offset: 2px;
+    }
+    .stButton button { border-radius: 10px; }
+    [data-testid="stExpander"] {
+        border: 1px solid #344052;
+        border-radius: 12px;
+    }
+    .cuvenhaus-card-header {
+        display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+        margin-bottom: 4px;
+    }
+    .cuvenhaus-chip {
+        display: inline-block; padding: 3px 9px; border-radius: 999px;
+        background: #273242; color: #e8edf5; font-size: .75rem;
+        border: 1px solid #3c495b;
+    }
+    .cuvenhaus-chip.warn {
+        background: #453719; color: #ffdf7a; border-color: #6c5626;
+    }
+    .cuvenhaus-chip.ok {
+        background: #193b31; color: #a6f1c8; border-color: #316c55;
+    }
+    @media (max-width: 700px) {
+        .block-container { padding-left: .7rem; padding-right: .7rem; }
+        [data-testid="stHorizontalBlock"] { flex-wrap: wrap; }
+        [data-testid="column"] { min-width: min(100%, 260px) !important; flex: 1 1 100% !important; }
+        [data-testid="stMetric"] { padding: 10px !important; }
+        .stButton button { min-height: 46px; }
+        [data-testid="stDataFrame"] { max-width: 100%; overflow-x: auto; }
+    }
+
     .small-note {
         color: #777;
         font-size: 0.78rem;
@@ -2875,9 +2932,52 @@ filter1, filter2 = st.columns(
 )
 
 with filter1:
-    only_problems = st.checkbox(
-        "Nur Problemfälle anzeigen"
+    only_problems = st.checkbox("Nur Problemfälle anzeigen")
+
+with filter2:
+    ui_quick_filter = st.selectbox(
+        "🔎 Schnellfilter",
+        ["Alle Aufträge", "ADAC", "Storno", "Manuell hinzugefügt",
+         "Gemeinsame Einsätze", "FP-Zone unklar"],
+        key="ui_quick_filter",
     )
+    ui_search = st.text_input(
+        "Aufträge durchsuchen",
+        placeholder="Auftragsnummer, Kennzeichen, Fahrer oder Adresse",
+        key="ui_order_search",
+    )
+
+
+def matches_ui_filters(order):
+    nr = order["nr"]
+    if only_problems and not order.get("zone_warning"):
+        return False
+    if ui_quick_filter == "ADAC" and not is_adac_order(
+        order.get("ag", ""), order.get("art", ""),
+        order.get("raw_nr", ""), order.get("stat", "")
+    ):
+        return False
+    if ui_quick_filter == "Storno" and not (
+        nr in st.session_state.storno_orders or is_storno_order(
+            order.get("stat", ""), order.get("art", ""),
+            order.get("raw_nr", ""), order.get("ag", "")
+        )
+    ):
+        return False
+    if ui_quick_filter == "Manuell hinzugefügt" and nr not in st.session_state.manual_added:
+        return False
+    if ui_quick_filter == "Gemeinsame Einsätze" and not (
+        nr in st.session_state.manual_added
+        and not belongs_to_active_driver(order)
+    ):
+        return False
+    if ui_quick_filter == "FP-Zone unklar" and not order.get("zone_warning"):
+        return False
+    query = normalize_search_text(ui_search.strip())
+    if query and not any(query in normalize_search_text(order.get(field, ""))
+                         for field in ("nr", "kfz", "fahrer", "start", "ziel")):
+        return False
+    return True
 
 
 # ============================================================
@@ -2955,7 +3055,7 @@ with left:
     left_orders = [
         o for o in all_week_orders
         if (belongs_to_active_driver(o) or o["nr"] in st.session_state.manual_added)
-        and (not only_problems or o.get("zone_warning"))
+        and matches_ui_filters(o)
     ]
 
     left_rows = []
@@ -3001,7 +3101,7 @@ with right:
 
     display_orders = [
         o for o in provisioned_orders
-        if (not only_problems or o.get("zone_warning"))
+        if matches_ui_filters(o)
     ]
 
     if not display_orders:
@@ -3018,6 +3118,26 @@ with right:
         is_storno_manual = nr in st.session_state.storno_orders
 
         with st.container(border=True):
+            # Compact, readable status tags; actual values remain unchanged.
+            _card_tags = []
+            if nr in st.session_state.manual_added:
+                _card_tags.append(("Manuell", "ok"))
+            if not belongs_to_active_driver(order):
+                _card_tags.append(("Gemeinsamer Einsatz", "ok"))
+            if order.get("zone_warning"):
+                _card_tags.append(("FP prüfen", "warn"))
+            if is_storno_manual:
+                _card_tags.append(("Storno", "warn"))
+            if _card_tags:
+                st.markdown(
+                    '<div class="cuvenhaus-card-header">'
+                    + "".join(
+                        f'<span class="cuvenhaus-chip {css}">{html.escape(label)}</span>'
+                        for label, css in _card_tags
+                    )
+                    + '</div>',
+                    unsafe_allow_html=True,
+                )
             h1, h2, h3, h4 = st.columns([1.15, 1.0, 1.65, 0.85])
             with h1:
                 st.markdown(f"**#{nr}**")
@@ -3174,6 +3294,9 @@ with right:
 
                     st.caption("Zonenregel: Einzelpunkt FP1 → FP2 → FP3. Für die gesamte Tour gewinnt anschließend die höhere Zone.")
                     st.markdown("**🗺️ Festpreisgebiete auf der Karte**")
+                    if order.get("zone_warning"):
+                        st.warning("Mindestens ein Standort ist nur geschätzt. "
+                                   "Die Karte zeigt dann die FP-Gebiete, nicht einen erfundenen Einsatzort.")
                     render_fp_map(order, FP1_POINTS, FP2_POINTS, FP3_POINTS)
 
                     st.markdown("**📌 Standort dauerhaft korrigieren**")
