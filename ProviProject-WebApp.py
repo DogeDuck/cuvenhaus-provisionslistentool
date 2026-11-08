@@ -59,7 +59,7 @@ from monatsarchiv import get_db as get_month_db, upsert_import, load_orders
 from autosicherung import show_setup as show_backup_setup
 from wochenlisten import available_weekends, in_billing_week, billing_week_bounds, get_scope, other_manual_weekend
 from provi_erweiterungen import (claim as save_codriver_claim, unclaim as remove_codriver_claim,
-    claims_for, claimants, save_location, get_location, audit as audit_commissions,
+    claims_for, claimants, save_location, get_locations_bulk, audit as audit_commissions,
     decisions as audit_decisions, set_decision, prune as prune_claims)
 
 st.markdown(
@@ -464,6 +464,17 @@ def _split_city_and_street_after_postcode(remainder):
         return "", ""
     idx = _street_start_index(remainder)
     if idx is None:
+        # Suffixless streets: "Wachtberg Zwischen den Hüllen 47".
+        tokens = remainder.split()
+        if (len(tokens) >= 4
+                and tokens[0].casefold() in {"wachtberg", "bonn", "bornheim",
+                    "alfter", "troisdorf", "siegburg", "niederkassel",
+                    "königswinter", "bad", "sankt"}
+                and re.fullmatch(r"\d{1,4}[a-zA-Z]?", tokens[-1])):
+            city_words = 2 if tokens[0].casefold() in {"bad", "sankt"} else 1
+            if len(tokens) - city_words >= 3:
+                return (smart_city_name(" ".join(tokens[:city_words])),
+                        smart_street_name(" ".join(tokens[city_words:])))
         return smart_city_name(remainder), ""
     tokens = remainder.split()
     city = " ".join(tokens[:idx]).strip()
@@ -504,6 +515,8 @@ def clean_onstreet_address(raw):
     # "Bonner Talweg 287Thomas Steinseifer" -> "Bonner Talweg 287".
     # Nur die direkt an einer Hausnummer klebende Namensfolge abtrennen.
     text = re.sub(r"(\b\d{1,4}[a-z]?)(?=[A-ZÄÖÜ][a-zäöüß]{2,}(?:\s+[A-ZÄÖÜ][a-zäöüß]+)+)([A-ZÄÖÜ][a-zäöüß]+(?:\s+[A-ZÄÖÜ][a-zäöüß]+)+)", r"\1", text)
+    # Collapse identical adjacent house numbers, not legitimate number ranges.
+    text = re.sub(r"\b(\d{1,4}[a-zA-Z]?)\s+\1\b", r"\1", text, flags=re.I)
     parts = [re.sub(r"\s+", " ", p).strip(" ,") for p in text.split(",") if p.strip(" ,")]
 
     postal_code = ""
@@ -647,6 +660,8 @@ def street_name_variants(street):
 
     # Suffixe nur am Wortende ändern, damit z.B. 'Straßburger' nicht zerlegt wird.
     replacements = []
+    replacements.append(re.sub(r"(?i)\bstr\.?$", "Straße", street))
+    replacements.append(re.sub(r"(?i)\bstr\.?$", "Strasse", street))
     replacements.append(re.sub(r"(?i)(?:-|\s)str\.?\b", " Straße", street))
     replacements.append(re.sub(r"(?i)(?:-|\s)str\.?\b", " Strasse", street))
     replacements.append(re.sub(r"(?i)straße\b", "Strasse", street))
@@ -2525,13 +2540,11 @@ try:
     _claim_db = get_month_db()
     try:
         saved_claims = claims_for(_claim_db, active_driver) if active_driver != "Alle Fahrer" else set()
-        verified_locations = {}
-        for _o in all_week_orders:
-            for _address in (_o.get("start", ""), _o.get("ziel", "")):
-                if _address:
-                    _point = get_location(_claim_db, _address)
-                    if _point is not None:
-                        verified_locations[" ".join(_address.casefold().split())] = _point
+        verified_locations = get_locations_bulk(
+            _claim_db,
+            (_address for _o in all_week_orders
+             for _address in (_o.get("start", ""), _o.get("ziel", "")))
+        )
     finally:
         _claim_db.close()
 except Exception as _claim_error:
