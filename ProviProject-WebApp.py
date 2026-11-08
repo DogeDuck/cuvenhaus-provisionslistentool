@@ -54,6 +54,11 @@ require_access()
 from ki_assistent import render_ai_panel
 from provi_befehl import render_command_panel
 from fp_karte import render_fp_map
+from strassenkilometer import parse_road_reference
+from csv_versionsvergleich import compare_versions, duplicate_csv_numbers
+from provisions_waechter import import_alerts, price_alert
+from bereitschaftskalender import (assign as save_standby, unassign as remove_standby,
+    assignments as load_standby, overlaps as standby_overlaps)
 from cuvenhaus_suite import render_suite
 from monatsarchiv import get_db as get_month_db, upsert_import, load_orders
 from autosicherung import show_setup as show_backup_setup
@@ -1398,6 +1403,8 @@ def resolve_address_zone(address):
             "cleaned_address": "", "display_name": "", "query_used": "",
         }
 
+    road_ref = parse_road_reference(raw)
+
     # Verified user coordinates override uncertain external geocoding.
     override = st.session_state.get("verified_locations", {}).get(
         " ".join(raw.casefold().split())
@@ -1414,6 +1421,20 @@ def resolve_address_zone(address):
                         else "Manueller Standort außerhalb der FP-Gebiete"),
             "cleaned_address": cleaned.get("address", ""),
             "display_name": "Manuell bestätigt", "query_used": "",
+        }
+
+    if road_ref:
+        return {
+            "zone": None, "source": "road_km_unverified",
+            "quality": "unknown", "lat": None, "lon": None,
+            "warning": True,
+            "message": (
+                f"Straßenkilometer erkannt: {road_ref['label']}. "
+                "Abschnittskennung und Kilometrierung noch nicht mit "
+                "verifizierten GPS-Daten verknüpft; bitte Position bestätigen."
+            ),
+            "cleaned_address": road_ref["label"],
+            "display_name": "", "query_used": "",
         }
 
     geo = geocode_cleaned_address(cleaned)
@@ -2443,6 +2464,17 @@ if uploaded_file is not None:
         orders, drivers, headers = (
             import_csv_bytes(raw)
         )
+        # Compare source CSV before archive upsert. Missing rows may simply
+        # mean the export is partial; never delete them from the archive.
+        _previous = st.session_state.orders
+        if not _previous:
+            _snapshot_db = get_month_db()
+            try:
+                _previous = load_orders(_snapshot_db)
+            finally:
+                _snapshot_db.close()
+        st.session_state["csv_version_diff"] = compare_versions(_previous, orders)
+        st.session_state["csv_import_duplicates"] = duplicate_csv_numbers(raw)
 
         try:
             db_month = get_month_db()
@@ -2500,6 +2532,27 @@ if st.session_state.get("month_backup_error"):
                + st.session_state["month_backup_error"]
                + " Die CSV ist lokal gespeichert und kann bearbeitet werden. "
                "Auf Streamlit Cloud ist sie damit noch nicht dauerhaft gesichert.")
+
+if st.session_state.get("csv_version_diff"):
+    _diff = st.session_state["csv_version_diff"]
+    with st.expander(
+        f"🔄 CSV-Versionsvergleich · {len(_diff['neu'])} neu · "
+        f"{len(_diff['geaendert'])} geändert · "
+        f"{len(_diff['fehlt_im_export'])} nicht im Export",
+        expanded=bool(_diff["geaendert"]),
+    ):
+        st.caption("Vergleich der OnStreet-Quelldaten vor dem Import. "
+                   "Fehlende Aufträge werden NICHT aus dem Monatsarchiv gelöscht. "
+                   "Manuelle Provisionskorrekturen zählen nicht als CSV-Änderung.")
+        if _diff["neu"]:
+            st.write("**Neu:** " + ", ".join("#" + n for n in _diff["neu"][:50]))
+        for _nr, _changes in list(_diff["geaendert"].items())[:60]:
+            with st.expander(f"#{_nr} · {', '.join(_changes)}"):
+                for _field, (_old, _new) in _changes.items():
+                    st.write(f"**{_field}**: {_old or '–'} → {_new or '–'}")
+        if _diff["fehlt_im_export"]:
+            st.info(f"{len(_diff['fehlt_im_export'])} archivierte Aufträge "
+                    "fehlen im aktuellen CSV-Ausschnitt. Das ist keine Löschung.")
 
 if st.session_state.get('month_import_result'):
     stats = st.session_state.month_import_result
@@ -2588,6 +2641,49 @@ st.caption(
     f"bis {standby_end.strftime('%d.%m. %H:%M')} "
     "· Zeitbasis: Annahme"
 )
+
+# Read-only planning overview; changing the plan never silently changes pay.
+with st.expander("📅 Bereitschaftskalender · Planung", expanded=False):
+    st.caption("Freitag 21:00 bis Sonntag 21:00. "
+               "Kalendereinträge sind Planung und ändern keine Provisionen.")
+    _plan_date = st.date_input("Wochenende auswählen", value=selected_friday,
+                               key="standby_plan_date")
+    _plan_driver = st.selectbox("Fahrer einteilen",
+                                st.session_state.detected_drivers or [""],
+                                key="standby_plan_driver")
+    _plan_note = st.text_input("Notiz (optional)", key="standby_plan_note")
+    _p1, _p2 = st.columns(2)
+    with _p1:
+        if st.button("Bereitschaft speichern", key="standby_save"):
+            _db = get_month_db()
+            try:
+                save_standby(_db, _plan_date, _plan_driver, _plan_note)
+            finally:
+                _db.close()
+            st.rerun()
+    with _p2:
+        if st.button("Eintragung entfernen", key="standby_delete"):
+            _db = get_month_db()
+            try:
+                remove_standby(_db, _plan_date, _plan_driver)
+            finally:
+                _db.close()
+            st.rerun()
+    _db = get_month_db()
+    try:
+        _plans = load_standby(_db)
+    finally:
+        _db.close()
+    if _plans:
+        st.dataframe(pd.DataFrame(_plans), use_container_width=True,
+                     hide_index=True)
+        _overlap = standby_overlaps(_plans)
+        if _overlap:
+            for _day, _names in _overlap.items():
+                st.warning(f"{_day}: mehrere Fahrer eingetragen "
+                           f"({', '.join(_names)}) – Einteilung prüfen.")
+    else:
+        st.info("Noch keine Bereitschaften eingetragen.")
 
 # Keine globale Auftragsauswahl mehr: manuell hinzugefügte/entfernte Aufträge
 # sowie Betrags- und Zonenänderungen gehören zu Fahrer UND Wochenende.
@@ -3335,6 +3431,19 @@ with right:
                                    "Die Karte zeigt dann die FP-Gebiete, nicht einen erfundenen Einsatzort.")
                     render_fp_map(order, FP1_POINTS, FP2_POINTS, FP3_POINTS)
 
+                    for _place_label, _raw_address in (
+                        ("Start", order.get("start", "")),
+                        ("Ziel", order.get("ziel", "")),
+                    ):
+                        _road = parse_road_reference(_raw_address)
+                        if _road:
+                            st.info(
+                                f"{_place_label}: {_road['label']} erkannt. "
+                                "Die Abschnittsnummer ist nicht verifiziert. "
+                                "Ohne amtliche Kilometrierungsdaten wird "
+                                "keine GPS-Position erfunden. "
+                                "Bitte eine geprüfte Position unten hinterlegen."
+                            )
                     st.markdown("**📌 Standort dauerhaft korrigieren**")
                     st.caption("Koordinaten als Dezimalgrad eingeben (z. B. aus Google Maps "
                                "oder OpenStreetMap). Die geprüfte Position wird für "
@@ -3396,6 +3505,26 @@ if active_driver != "Alle Fahrer":
             manual_ids=st.session_state.manual_added,
             claim_map=_claim_map,
         )
+        _extra = import_alerts(
+            all_week_orders,
+            st.session_state.get("csv_version_diff"),
+            st.session_state.get("csv_import_duplicates", ()),
+        )
+        _visible_nrs = {str(o.get("nr")) for o in all_week_orders}
+        _findings.extend((nr, code, msg) for nr, code, msg in _extra
+                         if nr in _visible_nrs)
+        for _o in provisioned_orders:
+            if is_adac_order(_o.get("ag", ""), _o.get("art", ""),
+                             _o.get("raw_nr", ""), _o.get("stat", "")):
+                _price_issue = price_alert(
+                    _o, ZONE_RATE,
+                    manual_override=(_o["nr"] in st.session_state.manual_tariffs
+                                     or _o["nr"] in st.session_state.manual_zones
+                                     or _o["nr"] in st.session_state.storno_orders),
+                )
+                if _price_issue:
+                    _findings.append(_price_issue)
+        _findings = list(dict.fromkeys(_findings))
         _open_count = sum(1 for _nr, _code, _desc in _findings
                           if _saved_decisions.get((_nr, _code), "Offen") == "Offen")
         with st.expander(f"🛡️ Provisionsprüfer · {_open_count} offene Hinweise", expanded=False):
