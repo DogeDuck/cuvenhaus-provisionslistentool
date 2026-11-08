@@ -3155,6 +3155,42 @@ with right:
             with h4:
                 st.markdown(f"### {euro(order.get('betrag', 0.0))}")
 
+            if is_adac:
+                _auto_zone = order.get("auto_zone")
+                _manual_price = st.session_state.manual_tariffs.get(nr)
+                _zone_override = st.session_state.manual_zones.get(nr)
+                _expected_auto = ZONE_RATE.get(_auto_zone)
+                _actual = float(order.get("betrag") or 0)
+                if _manual_price:
+                    st.warning(
+                        f"💶 Gespeicherter manueller Preis: "
+                        f"{euro(_manual_price['betrag'])} "
+                        f"({html.escape(str(_manual_price.get('tarif', '')))}). "
+                        f"Automatische GPS-Zone: {_auto_zone or 'unbekannt'}"
+                        + (f" ({euro(_expected_auto)})" if _expected_auto is not None else "")
+                        + ". 'Neu prüfen' entfernt den manuellen Preis nicht."
+                    )
+                    if st.button(
+                        "↩️ Manuellen Preis entfernen und FP neu berechnen",
+                        key=f"reset_manual_price_{nr}",
+                        use_container_width=True,
+                    ):
+                        st.session_state.manual_tariffs.pop(nr, None)
+                        order["geofence_checked"] = False
+                        calculate_adac_order(order, force=True)
+                        st.rerun()
+                elif _zone_override:
+                    st.info(f"Manuell gewählte Zone: {_zone_override}. "
+                            f"GPS-Ergebnis: {_auto_zone or 'unbekannt'}.")
+                elif (_expected_auto is not None
+                      and abs(_actual - _expected_auto) > 0.009
+                      and nr not in st.session_state.storno_orders):
+                    st.warning(
+                        f"FP-Preisabweichung: GPS-Zone {_auto_zone} "
+                        f"= {euro(_expected_auto)}, angezeigt {euro(_actual)}. "
+                        "Bitte Tarif und Auftragsstatus prüfen."
+                    )
+
             # Preis direkt am Auftrag: Auswahl + freier Betrag nebeneinander.
             p1, p2 = st.columns([1.7, 1.0])
             tariff_options = ["Keine Änderung"] + [t[0] for t in TARIFFS]
