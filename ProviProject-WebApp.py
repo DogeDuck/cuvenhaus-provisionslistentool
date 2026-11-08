@@ -2503,7 +2503,6 @@ scope_id, current_scope = get_scope(weekend_scopes, active_driver, selected_frid
 if st.session_state.get("active_week_scope") != scope_id:
     st.session_state.active_week_scope = scope_id
     st.session_state["add_result"] = None
-    st.session_state["week_order_search"] = ""
 for field in ("manual_added", "removed_orders", "storno_orders",
               "manual_zones", "manual_tariffs"):
     st.session_state[field] = current_scope[field]
