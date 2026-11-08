@@ -93,6 +93,28 @@ def get_location(db, raw_address):
     return tuple(rows[0]) if rows else None
 
 
+def get_locations_bulk(db, raw_addresses):
+    """Read all confirmed locations with one query per SQLite parameter batch.
+
+    Same normalized address keys and semantics as get_location(); no changes
+    to zone boundaries, precedence or geocoding decisions.
+    """
+    keys = sorted({address_key(raw) for raw in raw_addresses if address_key(raw)})
+    if not keys:
+        return {}
+    init(db)
+    found = {}
+    for offset in range(0, len(keys), 400):
+        batch = keys[offset:offset + 400]
+        placeholders = ",".join("?" for _ in batch)
+        for key, lat, lon in db.execute(
+            f"SELECT address_key,lat,lon FROM location_overrides "
+            f"WHERE address_key IN ({placeholders})", tuple(batch)
+        ):
+            found[key] = (lat, lon)
+    return found
+
+
 def audit(orders, *, standby_check=None, manual_ids=None, claim_map=None):
     """Deterministic findings; no speculative overtime auto-payments."""
     manual_ids = set(manual_ids or ())
