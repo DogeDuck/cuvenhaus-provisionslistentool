@@ -1423,9 +1423,14 @@ def resolve_address_zone(address):
             "zone": zone, "source": "manual_verified",
             "quality": "exact" if zone else "unknown",
             "lat": lat, "lon": lon,
-            "warning": zone is None,
-            "message": ("Manuell bestätigter Standort" if zone
-                        else "Manueller Standort außerhalb der FP-Gebiete"),
+            "warning": zone is None or road_ref is not None,
+            "message": (
+                f"Manuell bestätigte Koordinate für Straßenkennung {road_ref['label']}; "
+                "ohne Streckenabschnitt bitte prüfen, ob der Punkt tatsächlich auf dieser Straße liegt"
+                if road_ref else
+                ("Manuell bestätigter Standort" if zone
+                 else "Manueller Standort außerhalb der FP-Gebiete")
+            ),
             "cleaned_address": cleaned.get("address", ""),
             "display_name": "Manuell bestätigt", "query_used": "",
         }
