@@ -58,6 +58,9 @@ from cuvenhaus_suite import render_suite
 from monatsarchiv import get_db as get_month_db, upsert_import, load_orders
 from autosicherung import show_setup as show_backup_setup
 from wochenlisten import available_weekends, in_billing_week, billing_week_bounds, get_scope, other_manual_weekend
+from provi_erweiterungen import (claim as save_codriver_claim, unclaim as remove_codriver_claim,
+    claims_for, claimants, save_location, get_location, audit as audit_commissions,
+    decisions as audit_decisions, set_decision, prune as prune_claims)
 
 st.markdown(
     """
@@ -1323,6 +1326,24 @@ def resolve_address_zone(address):
             "cleaned_address": "", "display_name": "", "query_used": "",
         }
 
+    # Verified user coordinates override uncertain external geocoding.
+    override = st.session_state.get("verified_locations", {}).get(
+        " ".join(raw.casefold().split())
+    )
+    if override is not None:
+        lat, lon = override
+        zone = detect_zone_from_coordinates(lat, lon)
+        return {
+            "zone": zone, "source": "manual_verified",
+            "quality": "exact" if zone else "unknown",
+            "lat": lat, "lon": lon,
+            "warning": zone is None,
+            "message": ("Manuell bestätigter Standort" if zone
+                        else "Manueller Standort außerhalb der FP-Gebiete"),
+            "cleaned_address": cleaned.get("address", ""),
+            "display_name": "Manuell bestätigt", "query_used": "",
+        }
+
     geo = geocode_cleaned_address(cleaned)
     if geo.get("status") == "OK" and geo.get("lat") is not None and geo.get("lon") is not None:
         zone = detect_zone_from_coordinates(geo["lat"], geo["lon"])
@@ -2498,6 +2519,27 @@ st.caption(
 
 # Keine globale Auftragsauswahl mehr: manuell hinzugefügte/entfernte Aufträge
 # sowie Betrags- und Zonenänderungen gehören zu Fahrer UND Wochenende.
+# Restore shared driver claims and manually confirmed map positions from SQLite.
+# These survive CSV reimports and Streamlit session restarts when backup succeeds.
+try:
+    _claim_db = get_month_db()
+    try:
+        saved_claims = claims_for(_claim_db, active_driver) if active_driver != "Alle Fahrer" else set()
+        verified_locations = {}
+        for _o in all_week_orders:
+            for _address in (_o.get("start", ""), _o.get("ziel", "")):
+                if _address:
+                    _point = get_location(_claim_db, _address)
+                    if _point is not None:
+                        verified_locations[" ".join(_address.casefold().split())] = _point
+    finally:
+        _claim_db.close()
+except Exception as _claim_error:
+    saved_claims = set()
+    verified_locations = {}
+    st.warning("Gespeicherte Fahrer-/Standortzuordnungen konnten nicht geladen werden: " + str(_claim_error))
+st.session_state.verified_locations = verified_locations
+
 weekend_scopes = st.session_state.weekend_scopes
 scope_id, current_scope = get_scope(weekend_scopes, active_driver, selected_friday)
 if st.session_state.get("active_week_scope") != scope_id:
@@ -2506,6 +2548,12 @@ if st.session_state.get("active_week_scope") != scope_id:
 for field in ("manual_added", "removed_orders", "storno_orders",
               "manual_zones", "manual_tariffs"):
     st.session_state[field] = current_scope[field]
+# Persisted co-driver claims are restored only in the matching week.
+for _o in all_week_orders:
+    if _o["nr"] in saved_claims:
+        st.session_state.manual_added.add(_o["nr"])
+        st.session_state.removed_orders.discard(_o["nr"])
+
 
 
 def add_order_to_current_week(target):
@@ -2534,6 +2582,20 @@ def add_order_to_current_week(target):
         st.session_state.add_result = ("info", nr)
         return
 
+    if active_driver == "Alle Fahrer":
+        st.session_state.add_result = ("error", nr, "Bitte zuerst einen Fahrer auswählen.")
+        return
+    # Shared assignments are stored permanently and separately per driver.
+    if not belongs_to_active_driver(target):
+        try:
+            _db = get_month_db()
+            try:
+                save_codriver_claim(_db, active_driver, nr)
+            finally:
+                _db.close()
+        except Exception as exc:
+            st.session_state.add_result = ("error", nr, str(exc))
+            return
     st.session_state.manual_added.add(nr)
     st.session_state.removed_orders.discard(nr)
     st.session_state.add_result = ("success", nr, target.get("fahrer", ""))
@@ -2597,6 +2659,8 @@ if st.session_state.get("add_result"):
     result_type, result_number = result[:2]
     if result_type == "success":
         st.success(f"✅ Auftrag {result_number} zu deiner Wochenendliste hinzugefügt. OnStreet-Fahrer: {result[2]}. Der Auftrag zählt jetzt in deiner Provisionssumme.")
+    elif result_type == "error":
+        st.error(f"Auftrag {result_number} nicht gespeichert: {result[2]}")
     elif result_type == "other_week":
         st.warning(f"Auftrag {result_number} wurde bereits der Liste vom {result[2]} manuell zugeordnet. Keine doppelte Provision.")
     else:
@@ -3012,6 +3076,16 @@ with right:
 
             with a3:
                 if st.button("↩️ Entfernen", key=f"inline_remove_{nr}", use_container_width=True):
+                    if not belongs_to_active_driver(order):
+                        try:
+                            _db = get_month_db()
+                            try:
+                                remove_codriver_claim(_db, active_driver, nr)
+                            finally:
+                                _db.close()
+                        except Exception as exc:
+                            st.error("Gemeinsame Zuordnung konnte nicht entfernt werden: " + str(exc))
+                            st.stop()
                     st.session_state.removed_orders.add(nr)
                     st.session_state.manual_added.discard(nr)
                     st.rerun()
