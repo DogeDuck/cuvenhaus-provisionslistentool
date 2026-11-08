@@ -55,7 +55,7 @@ from ki_assistent import render_ai_panel
 from provi_befehl import render_command_panel
 from fp_karte import render_fp_map
 from strassenkilometer import parse_road_reference
-from csv_versionsvergleich import compare_versions
+from csv_versionsvergleich import compare_versions, duplicate_csv_numbers
 from provisions_waechter import import_alerts, price_alert
 from bereitschaftskalender import (assign as save_standby, unassign as remove_standby,
     assignments as load_standby, overlaps as standby_overlaps)
@@ -2316,8 +2316,6 @@ def import_csv_bytes(raw_bytes):
 
     orders = {}
     drivers = set()
-    _seen_csv_ids = set()
-    _duplicate_csv_ids = set()
 
     for row in rows[1:]:
         if not any(
@@ -2341,10 +2339,6 @@ def import_csv_bytes(raw_bytes):
             if nr_match
             else raw_nr.split()[0]
         )
-
-        if nr in _seen_csv_ids:
-            _duplicate_csv_ids.add(nr)
-        _seen_csv_ids.add(nr)
 
         stat = cell(row, idx_stat)
         fahrer = cell(row, idx_fahrer)
@@ -2422,7 +2416,6 @@ def import_csv_bytes(raw_bytes):
         if fahrer:
             drivers.add(fahrer)
 
-    st.session_state["_last_csv_duplicate_ids"] = sorted(_duplicate_csv_ids)
     return (
         orders,
         sorted(drivers),
@@ -2481,9 +2474,7 @@ if uploaded_file is not None:
             finally:
                 _snapshot_db.close()
         st.session_state["csv_version_diff"] = compare_versions(_previous, orders)
-        st.session_state["csv_import_duplicates"] = list(
-            st.session_state.get("_last_csv_duplicate_ids", ())
-        )
+        st.session_state["csv_import_duplicates"] = duplicate_csv_numbers(raw)
 
         try:
             db_month = get_month_db()
