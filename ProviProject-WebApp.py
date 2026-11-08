@@ -54,7 +54,7 @@ require_access()
 from ki_assistent import render_ai_panel
 from provi_befehl import render_command_panel
 from fp_karte import render_fp_map
-from strassenkilometer import parse_road_reference
+from strassenkilometer import parse_road_reference, parse_road_identifier
 from csv_versionsvergleich import compare_versions, duplicate_csv_numbers
 from provisions_waechter import import_alerts, price_alert
 from bereitschaftskalender import (assign as save_standby, unassign as remove_standby,
@@ -206,7 +206,7 @@ NOMINATIM_USER_AGENT = (
 SUCCESS_TTL_SECONDS = 180 * 24 * 60 * 60
 NOT_FOUND_TTL_SECONDS = 24 * 60 * 60
 NOMINATIM_MIN_INTERVAL = 1.05
-ADDRESS_NORMALIZER_VERSION = "v5"
+ADDRESS_NORMALIZER_VERSION = "v6"
 
 GEOCODE_LOCK = threading.Lock()
 LAST_NOMINATIM_REQUEST = 0.0
@@ -525,6 +525,13 @@ def _split_city_and_street_after_postcode(remainder):
     if not remainder:
         return "", ""
     idx = _street_start_index(remainder)
+    # In "Meckenheim Am Wiesenpfad 13", Am is part of the street.
+    if idx is not None and idx > 1:
+        tokens = remainder.split()
+        if tokens[idx - 1].casefold() in {"am", "im", "an", "auf", "in", "zum", "zur", "unter"}:
+            idx -= 1
+        elif idx > 2 and tokens[idx - 2].casefold() in {"an", "auf", "in", "unter", "zwischen"} and tokens[idx - 1].casefold() in {"der", "dem", "den", "die"}:
+            idx -= 2
     if idx is None:
         # Suffixless streets: "Wachtberg Zwischen den Hüllen 47".
         tokens = remainder.split()
@@ -1403,7 +1410,7 @@ def resolve_address_zone(address):
             "cleaned_address": "", "display_name": "", "query_used": "",
         }
 
-    road_ref = parse_road_reference(raw)
+    road_ref = parse_road_identifier(raw)
 
     # Verified user coordinates override uncertain external geocoding.
     override = st.session_state.get("verified_locations", {}).get(
@@ -1429,9 +1436,9 @@ def resolve_address_zone(address):
             "quality": "unknown", "lat": None, "lon": None,
             "warning": True,
             "message": (
-                f"Straßenkilometer erkannt: {road_ref['label']}. "
-                "Abschnittskennung und Kilometrierung noch nicht mit "
-                "verifizierten GPS-Daten verknüpft; bitte Position bestätigen."
+                f"Straßenreferenz erkannt: {road_ref['label']}. "
+                "Ohne verifizierte Abschnitts- und Kilometrierungsdaten "
+                "keine genaue GPS-Position; bitte Position bestätigen."
             ),
             "cleaned_address": road_ref["label"],
             "display_name": "", "query_used": "",
@@ -3435,11 +3442,11 @@ with right:
                         ("Start", order.get("start", "")),
                         ("Ziel", order.get("ziel", "")),
                     ):
-                        _road = parse_road_reference(_raw_address)
+                        _road = parse_road_identifier(_raw_address)
                         if _road:
                             st.info(
                                 f"{_place_label}: {_road['label']} erkannt. "
-                                "Die Abschnittsnummer ist nicht verifiziert. "
+                                "Der Straßenabschnitt ist nicht eindeutig verifiziert. "
                                 "Ohne amtliche Kilometrierungsdaten wird "
                                 "keine GPS-Position erfunden. "
                                 "Bitte eine geprüfte Position unten hinterlegen."
