@@ -1,7 +1,7 @@
 name: Cuvenhaus regression tests
 on:
   push:
-    branches: [main, feature/provision-suite-v2, fix/wochenendlisten-getrennt, feature/gemeinsame-einsaetze-fp-pruefer, perf/batch-standortdaten]
+    branches: [main, feature/provision-suite-v2, fix/wochenendlisten-getrennt, feature/gemeinsame-einsaetze-fp-pruefer, perf/batch-standortdaten, perf/batch-audit-claims]
   pull_request:
     branches: [main]
 jobs:
