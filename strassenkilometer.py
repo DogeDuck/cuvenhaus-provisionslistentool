@@ -35,7 +35,7 @@ def parse_road_reference(raw):
 # Standalone road identifiers such as "Bonn L158 L158, Bonn" have no
 # stationing. They must never be resolved to the centre of Bonn.
 ROAD_ONLY_RE = re.compile(
-    r"(?<![A-Z0-9])(?P<road>[ABLK]\\s*\\d{1,4})(?![A-Z0-9])", re.I
+    r"(?<![A-Z0-9])(?P<road>[ABLK]\s*\d{1,4})(?![A-Z0-9])", re.I
 )
 
 
@@ -48,7 +48,7 @@ def parse_road_identifier(raw):
     match = ROAD_ONLY_RE.search(text)
     if not match:
         return None
-    road = re.sub(r"\\s+", "", match.group("road")).upper()
+    road = re.sub(r"\s+", "", match.group("road")).upper()
     return {
         "road": road, "section": None,
         "km_start": None, "km_end": None,
