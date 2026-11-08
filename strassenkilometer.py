@@ -5,11 +5,11 @@ No guessed GPS coordinates: a road reference needs verified survey/road data.
 import re
 
 ROAD_RE = re.compile(
-    r"(?<![A-Z0-9])(?P<road>[ABLK]\\s*\\d{1,4})"
-    r"(?:\\s*-\\s*(?P<section>\\d{1,3}))?"
-    r"\\s+(?P<start>\\d{1,4}[.,]\\d{1,3})"
-    r"\\s*-\\s*(?P<end>\\d{1,4}[.,]\\d{1,3})"
-    r"(?![\\d.,])", re.I
+    r"(?<![A-Z0-9])(?P<road>[ABLK]\s*\d{1,4})"
+    r"(?:\s*-\s*(?P<section>\d{1,3}))?"
+    r"\s+(?P<start>\d{1,4}[.,]\d{1,3})"
+    r"\s*-\s*(?P<end>\d{1,4}[.,]\d{1,3})"
+    r"(?![\d.,])", re.I
 )
 
 
@@ -22,7 +22,7 @@ def parse_road_reference(raw):
     end = float(match.group("end").replace(",", "."))
     if end < start or end - start > 20:
         return None
-    road = re.sub(r"\\s+", "", match.group("road")).upper()
+    road = re.sub(r"\s+", "", match.group("road")).upper()
     return {
         "road": road,
         "section": match.group("section"),
