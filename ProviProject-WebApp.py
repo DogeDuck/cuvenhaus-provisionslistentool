@@ -470,7 +470,7 @@ def _split_city_and_street_after_postcode(remainder):
                 and tokens[0].casefold() in {"wachtberg", "bonn", "bornheim",
                     "alfter", "troisdorf", "siegburg", "niederkassel",
                     "königswinter", "bad", "sankt"}
-                and re.fullmatch(r"\\d{1,4}[a-zA-Z]?", tokens[-1])):
+                and re.fullmatch(r"\d{1,4}[a-zA-Z]?", tokens[-1])):
             city_words = 2 if tokens[0].casefold() in {"bad", "sankt"} else 1
             if len(tokens) - city_words >= 3:
                 return (smart_city_name(" ".join(tokens[:city_words])),
@@ -516,7 +516,7 @@ def clean_onstreet_address(raw):
     # Nur die direkt an einer Hausnummer klebende Namensfolge abtrennen.
     text = re.sub(r"(\b\d{1,4}[a-z]?)(?=[A-ZÄÖÜ][a-zäöüß]{2,}(?:\s+[A-ZÄÖÜ][a-zäöüß]+)+)([A-ZÄÖÜ][a-zäöüß]+(?:\s+[A-ZÄÖÜ][a-zäöüß]+)+)", r"\1", text)
     # Collapse identical adjacent house numbers, not legitimate number ranges.
-    text = re.sub(r"\\b(\\d{1,4}[a-zA-Z]?)\\s+\\1\\b", r"\\1", text, flags=re.I)
+    text = re.sub(r"\b(\d{1,4}[a-zA-Z]?)\s+\1\b", r"\1", text, flags=re.I)
     parts = [re.sub(r"\s+", " ", p).strip(" ,") for p in text.split(",") if p.strip(" ,")]
 
     postal_code = ""
@@ -660,8 +660,8 @@ def street_name_variants(street):
 
     # Suffixe nur am Wortende ändern, damit z.B. 'Straßburger' nicht zerlegt wird.
     replacements = []
-    replacements.append(re.sub(r"(?i)\\bstr\\.?$", "Straße", street))
-    replacements.append(re.sub(r"(?i)\\bstr\\.?$", "Strasse", street))
+    replacements.append(re.sub(r"(?i)\bstr\.?$", "Straße", street))
+    replacements.append(re.sub(r"(?i)\bstr\.?$", "Strasse", street))
     replacements.append(re.sub(r"(?i)(?:-|\s)str\.?\b", " Straße", street))
     replacements.append(re.sub(r"(?i)(?:-|\s)str\.?\b", " Strasse", street))
     replacements.append(re.sub(r"(?i)straße\b", "Strasse", street))
