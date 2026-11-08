@@ -3214,7 +3214,7 @@ if active_driver != "Alle Fahrer":
         try:
             _claim_map = {}
             for _p in provisioned_orders:
-                _claim_map[_p["nr"]] = claimants(_audit_db, _p["nr"])
+                _claim_map[_p["nr"]] = sorted(set(claimants(_audit_db, _p["nr"])) | {" ".join(str(_p.get("fahrer", "")).casefold().split())})
             _saved_decisions = audit_decisions(_audit_db, active_driver)
         finally:
             _audit_db.close()
