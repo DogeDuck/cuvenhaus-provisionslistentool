@@ -8,7 +8,7 @@ from unittest.mock import patch
 import autosicherung
 import cuvenhaus_suite
 from provi_erweiterungen import (
-    claim, unclaim, claims_for, claimants, save_location, get_location,
+    claim, unclaim, claims_for, claimants, claimants_bulk, save_location, get_location,
     validate_coords, audit, decisions, set_decision, prune, get_locations_bulk,
 )
 
@@ -47,6 +47,18 @@ class ExtensionsTests(unittest.TestCase):
         unclaim(self.db, "Can-Erik Ross", "28255")
         self.assertEqual(claims_for(self.db, "Can-Erik Ross"), set())
         self.assertEqual(claims_for(self.db, "Marc Twardy"), {"28255"})
+
+    def test_claimants_bulk_matches_individual_queries(self):
+        claim(self.db, "Marc Twardy", "28255")
+        claim(self.db, "Can-Erik Ross", "28255")
+        claim(self.db, "Can-Erik Ross", "other")
+        numbers = ["28255", "other", "missing", "28255"]
+        bulk = claimants_bulk(self.db, numbers)
+        for nr in numbers:
+            self.assertEqual(bulk.get(nr, []), claimants(self.db, nr))
+        self.assertEqual(claimants_bulk(self.db, []), {})
+        self.assertEqual(claimants_bulk(
+            self.db, [str(i) for i in range(500)]), {})
 
     def test_verified_location_survives_reopen(self):
         save_location(self.db, "Bonner Talweg 287", 50.70, 7.10)

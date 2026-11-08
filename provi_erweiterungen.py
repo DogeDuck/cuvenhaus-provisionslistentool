@@ -59,6 +59,29 @@ def claimants(db, nr):
         (str(nr),))]
 
 
+def claimants_bulk(db, order_numbers):
+    """Return claimants per order in bounded SQLite batches.
+
+    Equivalent to calling claimants() for every order, but avoids N database
+    round trips on each Streamlit rerun.
+    """
+    numbers = sorted({str(nr) for nr in order_numbers if str(nr)})
+    if not numbers:
+        return {}
+    init(db)
+    result = {}
+    for offset in range(0, len(numbers), 400):
+        batch = numbers[offset:offset + 400]
+        placeholders = ",".join("?" for _ in batch)
+        for nr, driver in db.execute(
+            "SELECT order_nr,driver_id FROM co_driver_claims "
+            f"WHERE order_nr IN ({placeholders}) ORDER BY order_nr,driver_id",
+            tuple(batch),
+        ):
+            result.setdefault(nr, []).append(driver)
+    return result
+
+
 def address_key(raw):
     return " ".join(str(raw or "").casefold().strip().split())
 
