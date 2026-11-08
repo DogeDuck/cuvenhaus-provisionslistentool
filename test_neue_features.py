@@ -26,10 +26,10 @@ class NewFeatureTests(unittest.TestCase):
         self.assertIn("nicht gelöscht", import_alerts([], diff)[0][2])
 
     def test_csv_duplicate_detection_before_import(self):
-        data = ("Auftrag;Fahrer;Einsatzort\\n"
-                "28255;Marc;Bonn\\n"
-                "28255;Can-Erik;Bonn\\n"
-                "28256;Marc;Wachtberg\\n").encode("utf-8")
+        data = ("Auftrag;Fahrer;Einsatzort\n"
+                "28255;Marc;Bonn\n"
+                "28255;Can-Erik;Bonn\n"
+                "28256;Marc;Wachtberg\n").encode("utf-8")
         self.assertEqual(duplicate_csv_numbers(data), ["28255"])
 
     def test_duplicate_and_price_alerts(self):
