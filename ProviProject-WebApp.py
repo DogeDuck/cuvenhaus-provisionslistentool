@@ -497,6 +497,10 @@ def clean_onstreet_address(raw):
     text = original.replace("\n", " ").replace("\r", " ")
     text = re.sub(r"\(\s*[A-ZÄÖÜ]{1,5}\s*\)", "", text)
     text = re.sub(r"\s+", " ", text).strip(" ,")
+    # OnStreet hängt manchmal Namen ohne Trennzeichen an Hausnummern:
+    # "Bonner Talweg 287Thomas Steinseifer" -> "Bonner Talweg 287".
+    # Nur die direkt an einer Hausnummer klebende Namensfolge abtrennen.
+    text = re.sub(r"(\b\d{1,4}[a-z]?)(?=[A-ZÄÖÜ][a-zäöüß]{2,}(?:\s+[A-ZÄÖÜ][a-zäöüß]+)+)([A-ZÄÖÜ][a-zäöüß]+(?:\s+[A-ZÄÖÜ][a-zäöüß]+)+)", r"\1", text)
     parts = [re.sub(r"\s+", " ", p).strip(" ,") for p in text.split(",") if p.strip(" ,")]
 
     postal_code = ""
