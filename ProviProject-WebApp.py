@@ -54,6 +54,7 @@ require_access()
 from ki_assistent import render_ai_panel
 from provi_befehl import render_command_panel
 from fp_karte import render_fp_map
+from strassenkilometer import parse_road_reference
 from cuvenhaus_suite import render_suite
 from monatsarchiv import get_db as get_month_db, upsert_import, load_orders
 from autosicherung import show_setup as show_backup_setup
@@ -1398,6 +1399,10 @@ def resolve_address_zone(address):
             "cleaned_address": "", "display_name": "", "query_used": "",
         }
 
+    # Road kilometre references are not house addresses. Never geocode them
+    # as arbitrary streets or assign a PLZ-based FP tariff.
+    road_ref = parse_road_reference(raw)
+
     # Verified user coordinates override uncertain external geocoding.
     override = st.session_state.get("verified_locations", {}).get(
         " ".join(raw.casefold().split())
@@ -1414,6 +1419,21 @@ def resolve_address_zone(address):
                         else "Manueller Standort außerhalb der FP-Gebiete"),
             "cleaned_address": cleaned.get("address", ""),
             "display_name": "Manuell bestätigt", "query_used": "",
+        }
+
+    if road_ref:
+        return {
+            "zone": None, "source": "road_km_unverified",
+            "quality": "unknown", "lat": None, "lon": None,
+            "warning": True,
+            "message": (
+                f"Straßenkilometer erkannt: {road_ref['label']}. "
+                "Abschnittskennung und GPS-Lage nicht verifiziert; "
+                "keine automatische FP-Zuordnung. "
+                "Standort bitte anhand der Straßenkilometrierung prüfen."
+            ),
+            "cleaned_address": road_ref["label"],
+            "display_name": "", "query_used": "",
         }
 
     geo = geocode_cleaned_address(cleaned)
