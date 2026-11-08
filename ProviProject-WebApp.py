@@ -59,7 +59,7 @@ from monatsarchiv import get_db as get_month_db, upsert_import, load_orders
 from autosicherung import show_setup as show_backup_setup
 from wochenlisten import available_weekends, in_billing_week, billing_week_bounds, get_scope, other_manual_weekend
 from provi_erweiterungen import (claim as save_codriver_claim, unclaim as remove_codriver_claim,
-    claims_for, claimants, save_location, get_locations_bulk, audit as audit_commissions,
+    claims_for, claimants_bulk, save_location, get_locations_bulk, audit as audit_commissions,
     decisions as audit_decisions, set_decision, prune as prune_claims)
 
 st.markdown(
@@ -3225,9 +3225,13 @@ if active_driver != "Alle Fahrer":
     try:
         _audit_db = get_month_db()
         try:
-            _claim_map = {}
+            _claim_map = claimants_bulk(
+                _audit_db, (_p["nr"] for _p in provisioned_orders)
+            )
             for _p in provisioned_orders:
-                _claim_map[_p["nr"]] = sorted(set(claimants(_audit_db, _p["nr"])) | {" ".join(str(_p.get("fahrer", "")).casefold().split())})
+                _nr = _p["nr"]
+                _primary = " ".join(str(_p.get("fahrer", "")).casefold().split())
+                _claim_map[_nr] = sorted(set(_claim_map.get(_nr, ())) | {_primary})
             _saved_decisions = audit_decisions(_audit_db, active_driver)
         finally:
             _audit_db.close()
