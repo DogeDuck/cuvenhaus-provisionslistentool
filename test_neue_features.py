@@ -2,7 +2,7 @@ import sqlite3
 import unittest
 from datetime import date
 
-from csv_versionsvergleich import compare_versions, duplicate_ids
+from csv_versionsvergleich import compare_versions, duplicate_ids, duplicate_csv_numbers
 from provisions_waechter import import_alerts, price_alert
 from bereitschaftskalender import (assign, unassign, assignments, overlaps, friday_for)
 from strassenkilometer import parse_road_reference
@@ -24,6 +24,13 @@ class NewFeatureTests(unittest.TestCase):
         diff = compare_versions({"1": {"nr": "1"}}, {})
         self.assertEqual(diff["fehlt_im_export"], ["1"])
         self.assertIn("nicht gelöscht", import_alerts([], diff)[0][2])
+
+    def test_csv_duplicate_detection_before_import(self):
+        data = ("Auftrag;Fahrer;Einsatzort\\n"
+                "28255;Marc;Bonn\\n"
+                "28255;Can-Erik;Bonn\\n"
+                "28256;Marc;Wachtberg\\n").encode("utf-8")
+        self.assertEqual(duplicate_csv_numbers(data), ["28255"])
 
     def test_duplicate_and_price_alerts(self):
         self.assertEqual(duplicate_ids([{"nr": "3"}, {"nr": "3"}, {"nr": "4"}]), ["3"])
