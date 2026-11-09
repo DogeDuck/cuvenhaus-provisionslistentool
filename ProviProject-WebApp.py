@@ -659,6 +659,12 @@ def clean_onstreet_address(raw):
         if city:
             candidate = re.sub(rf"^\s*{re.escape(city)}\s+", "", candidate, flags=re.I)
         candidate = candidate.strip(" ,")
+        # OnStreet sometimes inserts a Bonn borough between locality and street.
+        if city.casefold() == "bonn":
+            candidate = re.sub(
+                r"(?i)^(?:bonn\\s+)?(?:beuel|bad\\s+godesberg)\\s+",
+                "", candidate,
+            )
         if not candidate:
             continue
         # Reiner Ortsblock nicht als Straße missverstehen.
