@@ -206,7 +206,7 @@ NOMINATIM_USER_AGENT = (
 SUCCESS_TTL_SECONDS = 180 * 24 * 60 * 60
 NOT_FOUND_TTL_SECONDS = 24 * 60 * 60
 NOMINATIM_MIN_INTERVAL = 1.05
-ADDRESS_NORMALIZER_VERSION = "v6"
+ADDRESS_NORMALIZER_VERSION = "v7"
 
 GEOCODE_LOCK = threading.Lock()
 LAST_NOMINATIM_REQUEST = 0.0
@@ -525,6 +525,15 @@ def _split_city_and_street_after_postcode(remainder):
     if not remainder:
         return "", ""
     idx = _street_start_index(remainder)
+    tokens = remainder.split()
+    if len(tokens) >= 3 and tokens[0].casefold() == "bad" and tokens[1].casefold() == "godesberg":
+        return "Bonn", smart_street_name(" ".join(tokens[2:]))
+    if len(tokens) >= 3 and tokens[0].casefold() == "bonn" and tokens[1].casefold() == "beuel":
+        return "Bonn", smart_street_name(" ".join(tokens[2:]))
+    if len(tokens) >= 4 and tokens[0].casefold() == "bonn" and tokens[1].casefold() == "bad" and tokens[2].casefold() == "godesberg":
+        return "Bonn", smart_street_name(" ".join(tokens[3:]))
+    if len(tokens) >= 3 and tokens[0].casefold() == "bonn" and idx is not None:
+        return "Bonn", smart_street_name(" ".join(tokens[1:]))
     # In "Meckenheim Am Wiesenpfad 13", Am is part of the street.
     if idx is not None and idx > 1:
         tokens = remainder.split()
@@ -563,6 +572,23 @@ def _remove_house_number(street, house_number):
     ).strip(" ,")
 
 
+def collapse_onstreet_repetitions(raw):
+    """Remove duplicated OnStreet address spans before parsing."""
+    value = re.sub(r"\s+", " ", safe_text(raw)).strip(" ,")
+    for _ in range(3):
+        updated = re.sub(
+            r"(?i)(?P<fragment>[A-ZÄÖÜa-zäöüß][\wÄÖÜäöüß. -]{3,70}?"
+            r"(?:str(?:aße|asse|\.)?|weg|allee|pfad|ring|platz)\s*"
+            r"\d{1,4}[a-z]?(?:\s*[-–]\s*\d{1,4}[a-z]?)?)"
+            r"\s*(?P=fragment)(?![\w])",
+            lambda match: match.group("fragment"), value,
+        )
+        if updated == value:
+            break
+        value = updated
+    return value
+
+
 def clean_onstreet_address(raw):
     """Bereinigt typische OnStreet-Adressen, ohne Informationen wegzuwerfen."""
     original = safe_text(raw)
@@ -580,6 +606,7 @@ def clean_onstreet_address(raw):
     text = original.replace("\n", " ").replace("\r", " ")
     text = re.sub(r"\(\s*[A-ZÄÖÜ]{1,5}\s*\)", "", text)
     text = re.sub(r"\s+", " ", text).strip(" ,")
+    text = collapse_onstreet_repetitions(text)
     # OnStreet hängt manchmal Namen ohne Trennzeichen an Hausnummern:
     # "Bonner Talweg 287Thomas Steinseifer" -> "Bonner Talweg 287".
     # Nur die direkt an einer Hausnummer klebende Namensfolge abtrennen.
@@ -632,6 +659,12 @@ def clean_onstreet_address(raw):
         if city:
             candidate = re.sub(rf"^\s*{re.escape(city)}\s+", "", candidate, flags=re.I)
         candidate = candidate.strip(" ,")
+        # OnStreet sometimes inserts a Bonn borough between locality and street.
+        if city.casefold() == "bonn":
+            candidate = re.sub(
+                r"(?i)^(?:bonn\s+)?(?:beuel|bad\s+godesberg)\s+",
+                "", candidate,
+            )
         if not candidate:
             continue
         # Reiner Ortsblock nicht als Straße missverstehen.
