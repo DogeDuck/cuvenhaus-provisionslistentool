@@ -662,7 +662,7 @@ def clean_onstreet_address(raw):
         # OnStreet sometimes inserts a Bonn borough between locality and street.
         if city.casefold() == "bonn":
             candidate = re.sub(
-                r"(?i)^(?:bonn\\s+)?(?:beuel|bad\\s+godesberg)\\s+",
+                r"(?i)^(?:bonn\s+)?(?:beuel|bad\s+godesberg)\s+",
                 "", candidate,
             )
         if not candidate:
